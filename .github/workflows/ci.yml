@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+
+      # ffprobe/ffmpeg let the muxer test check real output; without them
+      # that test is skipped rather than failing.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - run: npm ci
+
+      # Typecheck, unit tests (including the relay's WebTransport server),
+      # library and relay builds — the same pipeline run locally before a commit.
+      - run: npm run verify
+
+  e2e:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: webtransport-datagram
+          - name: webtransport-stream
+            wt_mode: stream
+          - name: websocket
+            transport: websocket
+          - name: fallback-to-websocket
+            wt_broken: '1'
+          # Hides MediaStreamTrackProcessor: the <video> frame path Safari and Firefox use.
+          - name: video-element-frames
+            transport: webtransport
+            fallback: '1'
+    name: e2e (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - run: npm ci
+
+      - run: npx playwright-core install --with-deps chromium
+
+      # Headless Chromium with a fake camera streams the demo page through the
+      # relay to a local UDP socket; the capture is checked with ffprobe and a
+      # KLV parser (video, ST 0601 values, footprint, live fps/bitrate changes,
+      # and the transport actually used).
+      - run: npm run e2e
+        env:
+          TRANSPORT: ${{ matrix.transport }}
+          WT_MODE: ${{ matrix.wt_mode }}
+          WT_BROKEN: ${{ matrix.wt_broken }}
+          FALLBACK: ${{ matrix.fallback }}
+          SCREENSHOT: e2e-artifacts/demo.png
+
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-${{ matrix.name }}
+          path: e2e-artifacts/
+          if-no-files-found: ignore

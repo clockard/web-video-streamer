@@ -12,7 +12,7 @@
 import { createSocket, type Socket } from 'node:dgram';
 import { Http3Server } from '@fails-components/webtransport';
 import { randomBytes } from 'node:crypto';
-import { resolveTarget, TsDatagramChunker, type RelayOptions, type RelayTarget } from './relay';
+import { resolveTarget, TsDatagramChunker, type RelayOptions, type RelayTarget } from './relay.js';
 
 export const WEBTRANSPORT_PATH = '/stream';
 

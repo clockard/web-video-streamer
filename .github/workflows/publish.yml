@@ -1,0 +1,95 @@
+name: Release
+
+# Manually triggered: pick a version number, this workflow does the rest.
+#
+# Run it from the GitHub UI — Actions tab → "Release" workflow → "Run
+# workflow" — and enter a version like 0.1.0 (no leading "v"). It will:
+#   1. Set the version of both published packages, web-video-streamer (the
+#      browser library) and web-video-streamer-relay, to the number you gave it.
+#   2. Run the same build+test gate as CI, plus every browser e2e variant.
+#   3. Commit that version bump, tag it (vX.Y.Z), and push both to main.
+#   4. Publish both packages to npm via Trusted Publishing (OIDC) — no npm
+#      token is stored in this repo. This requires each package to have a
+#      trusted publisher configured on npmjs.com pointing at this repo and
+#      this workflow file (Package settings → Trusted Publisher on npmjs.com).
+#
+# If any step fails, nothing after it runs — in particular, a failed build
+# or test means no tag is pushed and nothing is published.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. 0.1.0 (no leading "v")'
+        required: true
+        type: string
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Validate version format
+        run: |
+          if ! [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'${{ inputs.version }}' doesn't look like a plain semver version (expected e.g. 0.1.0, no leading 'v')."
+            exit 1
+          fi
+
+      # Trusted Publishing needs npm 11.5.1+; Node 22's bundled npm may be
+      # older, so upgrade explicitly rather than relying on whatever ships.
+      - run: npm install -g npm@latest
+
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - run: npm ci
+
+      - name: Set package versions
+        run: npm version "${{ inputs.version }}" -w web-video-streamer -w web-video-streamer-relay --no-git-tag-version
+
+      # Same gate the "CI" workflow runs on every push: typecheck, unit tests,
+      # library and relay builds.
+      - run: npm run verify
+
+      # Plus every browser e2e variant, since this is the commit that's about to ship.
+      - run: npx playwright-core install --with-deps chromium
+      - run: npm run e2e
+      - run: npm run e2e
+        env:
+          WT_MODE: stream
+      - run: npm run e2e
+        env:
+          TRANSPORT: websocket
+      - run: npm run e2e
+        env:
+          WT_BROKEN: '1'
+      - run: npm run e2e
+        env:
+          TRANSPORT: webtransport
+          FALLBACK: '1'
+
+      - name: Commit version bump and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add packages/lib/package.json packages/relay/package.json package-lock.json
+          git commit -m "chore: release web-video-streamer v${{ inputs.version }}"
+          git tag "v${{ inputs.version }}"
+          git push origin HEAD:main
+          git push origin "v${{ inputs.version }}"
+
+      # No NODE_AUTH_TOKEN here: Trusted Publishing authenticates this job
+      # to npm via the OIDC token implied by `id-token: write` above.
+      - run: npm publish -w web-video-streamer --provenance
+      - run: npm publish -w web-video-streamer-relay --provenance

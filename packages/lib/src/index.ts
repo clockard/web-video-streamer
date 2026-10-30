@@ -1,7 +1,7 @@
 /**
- * @web-video-streamer/lib — stream a browser camera as MPEG-TS with MISB ST 0601
+ * web-video-streamer — stream a browser camera as MPEG-TS with MISB ST 0601
  * KLV metadata. Browsers cannot send UDP, so the transport stream is sent
- * over WebTransport or a WebSocket to a relay (see @web-video-streamer/relay)
+ * over WebTransport or a WebSocket to a relay (see web-video-streamer-relay)
  * that forwards it to the UDP target.
  */
 import { cameraLabel, openCamera, trackZoom, type CameraOptions } from './camera';

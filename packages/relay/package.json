@@ -1,12 +1,47 @@
 {
-  "name": "@web-video-streamer/relay",
+  "name": "web-video-streamer-relay",
   "version": "0.1.0",
-  "description": "WebTransport and WebSocket to UDP relay for @web-video-streamer/lib MPEG-TS streams",
-  "type": "module",
-  "bin": {
-    "web-video-streamer-relay": "./src/cli.ts"
+  "description": "WebTransport and WebSocket to UDP relay for web-video-streamer MPEG-TS streams",
+  "license": "MIT",
+  "author": "clockard",
+  "homepage": "https://github.com/clockard/web-video-streamer#readme",
+  "bugs": {
+    "url": "https://github.com/clockard/web-video-streamer/issues"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/clockard/web-video-streamer.git",
+    "directory": "packages/relay"
+  },
+  "keywords": [
+    "webtransport",
+    "websocket",
+    "udp",
+    "relay",
+    "mpeg-ts",
+    "http3",
+    "quic"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "web-video-streamer-relay": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "start": "tsx src/cli.ts"
   },
   "dependencies": {

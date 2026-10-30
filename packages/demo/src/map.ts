@@ -1,6 +1,6 @@
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import type { MetadataSnapshot } from '@web-video-streamer/lib';
+import type { MetadataSnapshot } from 'web-video-streamer';
 
 export class CameraMap {
   private readonly map: L.Map;

@@ -1,9 +1,9 @@
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { networkInterfaces } from 'node:os';
-import { certificateHash, generateSelfSignedCertificate, type ServerCertificate } from './cert';
-import { createRelay } from './relay';
-import { createWebTransportRelay, WEBTRANSPORT_PATH } from './webtransport';
+import { certificateHash, generateSelfSignedCertificate, type ServerCertificate } from './cert.js';
+import { createRelay } from './relay.js';
+import { createWebTransportRelay, WEBTRANSPORT_PATH } from './webtransport.js';
 
 export interface RelayServerOptions {
   /** WebSocket / HTTP port (0 = any free port). */

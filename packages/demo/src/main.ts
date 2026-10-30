@@ -1,4 +1,4 @@
-import { capturePhotoWithNativeCamera, createStreamer, readPhotoInfo, type Streamer } from '@web-video-streamer/lib';
+import { capturePhotoWithNativeCamera, createStreamer, readPhotoInfo, type Streamer } from 'web-video-streamer';
 import { CameraMap, fmtDistance } from './map';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;

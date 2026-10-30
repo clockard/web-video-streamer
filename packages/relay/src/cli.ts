@@ -1,4 +1,4 @@
-#!/usr/bin/env -S npx tsx
+#!/usr/bin/env node
 /**
  * Environment:
  *   PORT            WebSocket / HTTP listen port (default 8090)
@@ -11,7 +11,7 @@
  *   WT_HOSTNAMES    comma-separated names/IPs for the generated certificate (default: localhost + this host's IPs)
  */
 import { readFileSync } from 'node:fs';
-import { startRelay } from './server';
+import { startRelay } from './server.js';
 
 const log = (msg: string) => console.log(`${new Date().toISOString()} ${msg}`);
 const allow = (process.env.ALLOW ?? '127.0.0.1:*').split(',').map((s) => s.trim()).filter(Boolean);

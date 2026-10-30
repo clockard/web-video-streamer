@@ -25,11 +25,11 @@ import { startRelay } from '../packages/relay/src/server';
 const RELAY_PORT = 18090;
 const WT_PORT = 14433;
 /** auto | webtransport | websocket */
-const TRANSPORT = process.env.TRANSPORT ?? 'auto';
-const WT_MODE = process.env.WT_MODE ?? 'datagram';
+const TRANSPORT = process.env.TRANSPORT || 'auto';
+const WT_MODE = process.env.WT_MODE || 'datagram';
 /** Point WebTransport at a closed port to check the auto fallback to WebSocket. */
 const WT_BROKEN = !!process.env.WT_BROKEN;
-const STREAM_SECONDS = Number(process.env.STREAM_SECONDS ?? 6);
+const STREAM_SECONDS = Number(process.env.STREAM_SECONDS || 6);
 const LOCATION = { latitude: 38.8895, longitude: -77.0353 };
 const LIVE_FPS = 10;
 const LIVE_BITRATE_KBPS = 1000;
@@ -99,7 +99,7 @@ async function main() {
 
   // 3. Browser with fake camera, geolocation and orientation
   const browser = await chromium.launch({
-    executablePath: process.env.CHROME_PATH,
+    executablePath: process.env.CHROME_PATH || undefined,
     args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
   });
   const context = await browser.newContext({

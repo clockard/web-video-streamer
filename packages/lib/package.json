@@ -1,26 +1,49 @@
 {
-  "name": "@web-video-streamer/lib",
+  "name": "web-video-streamer",
   "version": "0.1.0",
-  "description": "Stream a browser camera as MPEG-TS with MISB ST 0601 KLV metadata via a WebTransport/WebSocket-to-UDP relay",
+  "description": "Stream a browser camera as MPEG-TS with MISB ST 0601 KLV metadata (location, pointing direction, field of view, ground footprint) via a WebTransport/WebSocket-to-UDP relay",
+  "license": "MIT",
+  "author": "clockard",
+  "homepage": "https://github.com/clockard/web-video-streamer#readme",
+  "bugs": {
+    "url": "https://github.com/clockard/web-video-streamer/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/clockard/web-video-streamer.git",
+    "directory": "packages/lib"
+  },
+  "keywords": [
+    "webcodecs",
+    "mpeg-ts",
+    "klv",
+    "misb",
+    "st0601",
+    "stanag-4609",
+    "webtransport",
+    "camera",
+    "streaming",
+    "udp"
+  ],
   "type": "module",
   "main": "./dist/web-video-streamer.umd.cjs",
   "module": "./dist/web-video-streamer.js",
-  "types": "./src/index.ts",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
+      "types": "./dist/index.d.ts",
       "import": "./dist/web-video-streamer.js",
       "require": "./dist/web-video-streamer.umd.cjs"
     }
   },
   "files": [
-    "dist",
-    "src"
+    "dist"
   ],
+  "sideEffects": false,
   "scripts": {
-    "build": "vite build"
+    "build": "vite build && tsc -p tsconfig.build.json"
   },
-  "dependencies": {
+  "devDependencies": {
     "exifr": "^7.1.3"
   }
 }

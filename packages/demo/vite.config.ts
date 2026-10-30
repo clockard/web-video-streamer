@@ -10,7 +10,7 @@ const relayPort = process.env.RELAY_PORT ?? '8090';
 export default defineConfig({
   plugins: [basicSsl()],
   resolve: {
-    alias: { '@web-video-streamer/lib': resolve(import.meta.dirname, '../lib/src/index.ts') },
+    alias: { 'web-video-streamer': resolve(import.meta.dirname, '../lib/src/index.ts') },
   },
   server: {
     proxy: {

@@ -15,23 +15,32 @@ Stream a phone (or any browser) camera to a remote server as **MPEG-TS over UDP*
 
 Browsers cannot open UDP sockets, so the library builds the complete transport stream in the page and sends it to a small relay, which forwards the bytes unchanged as UDP datagrams. The page reaches the relay over **WebTransport** (HTTP/3 over QUIC; preferred) or, as a fallback, over a **WebSocket**.
 
+## Install
+
+```sh
+npm install web-video-streamer          # browser library
+npx web-video-streamer-relay            # relay (or: npm install web-video-streamer-relay)
+```
+
+The library ships ES module and UMD builds with TypeScript declarations. The relay is a Node 22+ command, `web-video-streamer-relay`, configured by environment variables (see [Relay](#relay)). It also exports a programmatic API: `startRelay()`, `createRelay()`, `createWebTransportRelay()` and `generateSelfSignedCertificate()`.
+
 ## Packages
 
 | Package | Description |
 |---|---|
-| `packages/lib` (`@web-video-streamer/lib`) | The browser library: camera, WebCodecs encoder, MPEG-TS muxer, ST 0601 encoder, sensors, FOV and ground footprint, WebTransport/WebSocket transports |
-| `packages/relay` (`@web-video-streamer/relay`) | WebTransport + WebSocket → UDP relay with a destination allowlist |
-| `packages/demo` | Test web app (Vite, HTTPS) |
+| `packages/lib` (`web-video-streamer`) | The browser library: camera, WebCodecs encoder, MPEG-TS muxer, ST 0601 encoder, sensors, FOV and ground footprint, WebTransport/WebSocket transports |
+| `packages/relay` (`web-video-streamer-relay`) | WebTransport + WebSocket → UDP relay with a destination allowlist |
+| `packages/demo` | Test web app (Vite, HTTPS); not published |
 | `scripts/e2e.ts` | End-to-end test: headless Chromium → relay → UDP capture, checked with ffprobe and a KLV parser |
 
-## Quick start
+## Development
 
-Requires Node 22+. The relay's WebTransport server (`@fails-components/webtransport`) uses a native libquiche addon. Prebuilt binaries exist for Linux, macOS and Windows on x64 (and arm on Linux and macOS); other platforms compile it on install (needs CMake and a C++ toolchain).
+Requires Node 22+ (`.nvmrc`). The relay's WebTransport server (`@fails-components/webtransport`) uses a native libquiche addon. Prebuilt binaries exist for Linux, macOS and Windows on x64 (and arm on Linux and macOS); other platforms compile it on install (needs CMake and a C++ toolchain).
 
 ```sh
 npm install
 npm test                          # unit tests (KLV, TS muxer + ffprobe, FOV, orientation, footprint, relay incl. WebTransport)
-npm run typecheck
+npm run verify                    # typecheck + unit tests + library and relay builds (what CI runs)
 
 # terminal 1: relay; ALLOW lists the UDP destinations it may send to
 ALLOW=192.168.1.50:* npm run relay
@@ -76,10 +85,24 @@ Settings are remembered in the browser.
 | `STREAM_SECONDS` | Streaming time (default 6) |
 | `SCREENSHOT` | Save a screenshot of the page to this path |
 
+### CI and releases
+
+* **CI** (`.github/workflows/ci.yml`) runs on every push to `main` and on pull requests:
+  * `npm run verify`, with ffmpeg installed so the muxer test checks real output;
+  * the browser e2e test in five variants: WebTransport datagrams, WebTransport stream, WebSocket, fallback from a broken WebTransport URL to WebSocket, and the `<video>` frame path.
+  * A failing e2e variant uploads its screenshot.
+* **Release** (`.github/workflows/publish.yml`) is started by hand: Actions → Release → Run workflow, with a version like `0.2.0`. It then:
+  1. sets both packages' versions;
+  2. runs `verify` and every e2e variant;
+  3. commits, tags `vX.Y.Z` and pushes to `main`;
+  4. publishes `web-video-streamer` and `web-video-streamer-relay` to npm, with provenance, through npm Trusted Publishing (no token stored in the repo).
+
+  Each package needs a trusted publisher on npmjs.com pointing at this repository and `publish.yml`.
+
 ## Library usage
 
 ```ts
-import { createStreamer, capturePhotoWithNativeCamera } from '@web-video-streamer/lib';
+import { createStreamer, capturePhotoWithNativeCamera } from 'web-video-streamer';
 
 // Optional, from a click handler: a native camera photo keeps lens EXIF data.
 const calibrationPhoto = await capturePhotoWithNativeCamera();
@@ -212,9 +235,10 @@ WebTransport session protocol: the page opens a bidirectional control stream and
 ## Relay
 
 ```sh
-PORT=8090 ALLOW="10.0.0.5:5000,127.0.0.1:*" DEFAULT_TARGET=udp://10.0.0.5:5000 npm run relay
+PORT=8090 ALLOW="10.0.0.5:5000,127.0.0.1:*" DEFAULT_TARGET=udp://10.0.0.5:5000 npx web-video-streamer-relay
 # Use a real certificate for wss:// and WebTransport:
-TLS_CERT=cert.pem TLS_KEY=key.pem npm run relay
+TLS_CERT=cert.pem TLS_KEY=key.pem npx web-video-streamer-relay
+# In this repo, `npm run relay` runs the TypeScript source directly.
 ```
 
 | Variable | Default | |

@@ -1,5 +1,5 @@
 {
-  "name": "@web-video-streamer/demo",
+  "name": "web-video-streamer-demo",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,7 +9,7 @@
     "preview": "vite preview --host"
   },
   "dependencies": {
-    "@web-video-streamer/lib": "0.1.0",
+    "web-video-streamer": "*",
     "leaflet": "^1.9.4"
   },
   "devDependencies": {
