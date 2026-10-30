@@ -1,0 +1,19 @@
+{
+  "name": "@web-video-streamer/demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "vite build",
+    "preview": "vite preview --host"
+  },
+  "dependencies": {
+    "@web-video-streamer/lib": "0.1.0",
+    "leaflet": "^1.9.4"
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.22",
+    "@vitejs/plugin-basic-ssl": "^2.3.0"
+  }
+}

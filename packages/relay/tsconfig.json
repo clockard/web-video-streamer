@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": [
+      "ES2022"
+    ],
+    "types": [
+      "node"
+    ],
+    "customConditions": [
+      "node"
+    ]
+  },
+  "include": [
+    "src"
+  ]
+}

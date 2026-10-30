@@ -1,0 +1,28 @@
+{
+  "name": "web-video-streamer",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/lib",
+    "packages/relay",
+    "packages/demo"
+  ],
+  "scripts": {
+    "build": "npm run build -w @web-video-streamer/lib",
+    "test": "vitest run",
+    "typecheck": "tsc -p packages/lib --noEmit && tsc -p packages/relay --noEmit && tsc -p packages/demo --noEmit",
+    "dev": "npm run dev -w @web-video-streamer/demo",
+    "relay": "npm start -w @web-video-streamer/relay",
+    "e2e": "tsx scripts/e2e.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.18.1",
+    "@vidterra/misb.js": "^0.1.30",
+    "playwright-core": "^1.64.1",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  }
+}

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Video Stream Test</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Video Stream Test</h1>
+        <span id="state" class="badge" data-state="idle">idle</span>
+      </header>
+
+      <div class="preview">
+        <video id="preview" playsinline muted></video>
+        <div id="overlay" class="overlay" hidden></div>
+      </div>
+
+      <form id="config">
+        <label>
+          Relay URL
+          <input id="relay" name="relay" autocomplete="off" spellcheck="false" />
+        </label>
+        <label>
+          UDP target
+          <input id="target" name="target" autocomplete="off" spellcheck="false" placeholder="udp://host:port" />
+        </label>
+        <div class="grid">
+          <label>
+            Transport
+            <select id="transport">
+              <option value="auto">Auto (WebTransport, else WebSocket)</option>
+              <option value="webtransport">WebTransport only</option>
+              <option value="websocket">WebSocket only</option>
+            </select>
+          </label>
+          <label>
+            WebTransport mode
+            <select id="wt-mode">
+              <option value="datagram">Datagrams (lowest latency)</option>
+              <option value="stream">Reliable stream</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          WebTransport URL
+          <input id="wt-url" autocomplete="off" spellcheck="false" placeholder="https://host:4433/stream" />
+        </label>
+        <fieldset class="live-controls">
+          <legend>Video (adjustable while streaming)</legend>
+          <label>
+            <span class="row">Frame rate <output id="fps-out" for="fps"></output></span>
+            <input id="fps" type="range" min="1" max="60" step="1" value="30" />
+          </label>
+          <label>
+            <span class="row">Bitrate <output id="bitrate-out" for="bitrate"></output></span>
+            <input id="bitrate" type="range" min="0" max="8000" step="250" value="0" aria-describedby="bitrate-hint" />
+          </label>
+          <p id="bitrate-hint" class="hint">Bitrate at the far left is “auto” (scaled to resolution).</p>
+        </fieldset>
+        <fieldset class="live-controls">
+          <legend>Ground footprint (adjustable while streaming)</legend>
+          <div class="grid">
+            <label>Camera height above ground (m) <input id="height-agl" type="number" inputmode="decimal" min="0.1" step="any" value="1.5" /></label>
+            <label>Max range (m) <input id="max-range" type="number" inputmode="numeric" min="10" step="any" value="2000" /></label>
+          </div>
+          <p class="hint">Assumes flat ground. Parts of the view at or above the horizon, or farther than the max range, are cut off at that range (dashed outline on the map).</p>
+        </fieldset>
+        <details>
+          <summary>Options</summary>
+          <div class="grid">
+            <label>Width <input id="width" type="number" inputmode="numeric" value="1280" /></label>
+            <label>Height <input id="height" type="number" inputmode="numeric" value="720" /></label>
+            <label>Declination (°) <input id="declination" type="number" step="0.1" value="0" /></label>
+            <label>Mission ID <input id="mission" autocomplete="off" /></label>
+          </div>
+        </details>
+        <div class="actions">
+          <button type="button" id="calibrate" class="secondary">Calibrate FOV (take photo)</button>
+          <button type="submit" id="start">Start streaming</button>
+          <button type="button" id="stop" hidden>Stop</button>
+        </div>
+        <p id="calibration" class="hint">No calibration photo: FOV will come from an in-page photo or defaults.</p>
+      </form>
+
+      <div id="map" class="map" role="region" aria-label="Camera location and field of view map"></div>
+
+      <section class="panels">
+        <dl class="panel">
+          <dt>Position</dt>
+          <dd id="m-pos">—</dd>
+          <dt>Altitude (ellipsoid)</dt>
+          <dd id="m-alt">—</dd>
+          <dt>Azimuth / Elevation / Roll</dt>
+          <dd id="m-pose">—</dd>
+          <dt>Frame centre (ground / slant)</dt>
+          <dd id="m-center">—</dd>
+          <dt>FOV (H × V)</dt>
+          <dd id="m-fov">—</dd>
+          <dt>Camera</dt>
+          <dd id="m-camera">—</dd>
+        </dl>
+        <dl class="panel">
+          <dt>Frame rate (actual / limit)</dt>
+          <dd id="s-fps">—</dd>
+          <dt>Bitrate (actual / target)</dt>
+          <dd id="s-bitrate">—</dd>
+          <dt>Transport</dt>
+          <dd id="s-transport">—</dd>
+          <dt>Codec</dt>
+          <dd id="s-codec">—</dd>
+          <dt>Frames encoded / dropped</dt>
+          <dd id="s-frames">—</dd>
+          <dt>Sent</dt>
+          <dd id="s-sent">—</dd>
+        </dl>
+      </section>
+
+      <ol id="log" class="log" aria-live="polite"></ol>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

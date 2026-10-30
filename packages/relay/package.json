@@ -1,0 +1,19 @@
+{
+  "name": "@web-video-streamer/relay",
+  "version": "0.1.0",
+  "description": "WebTransport and WebSocket to UDP relay for @web-video-streamer/lib MPEG-TS streams",
+  "type": "module",
+  "bin": {
+    "web-video-streamer-relay": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@fails-components/webtransport": "^1.6.11",
+    "@fails-components/webtransport-transport-http3-quiche": "^1.6.11",
+    "@peculiar/x509": "^3.1.0",
+    "reflect-metadata": "^0.2.2",
+    "ws": "^8.22.0"
+  }
+}
