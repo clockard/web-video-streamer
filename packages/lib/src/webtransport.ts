@@ -2,18 +2,19 @@
  * WebTransport (HTTP/3 / QUIC) connection to the relay.
  *
  * After the session opens, a bidirectional control stream carries one JSON
- * line {"target", "mode"} and the relay's {"ok"} / {"error"} reply. Video then
+ * line {"device", "name", "mode"} and the relay's {"ok"} / {"error"} reply. Video then
  * goes either as datagrams (unreliable, like the UDP leg it feeds: lowest
  * latency, losses show as glitches until the next keyframe) or on one
  * unidirectional stream (reliable and ordered; delay can grow on bad links).
  */
-import type { Transport, TransportEvents } from './transport';
+import { REPLACED_CLOSE_CODE, type Transport, type TransportEvents } from './transport';
 
 export type WebTransportMode = 'datagram' | 'stream';
 
 export interface WebTransportTransportOptions {
   mode: WebTransportMode;
-  target?: string;
+  deviceId: string;
+  deviceName?: string;
   /** Base64 SHA-256 of a self-signed relay certificate (serverCertificateHashes). */
   serverCertificateHash?: string;
   connectTimeoutMs?: number;
@@ -116,7 +117,8 @@ export class WebTransportTransport implements Transport {
       await withTimeout(wt.ready, timeout, 'WebTransport connection');
       const control = await wt.createBidirectionalStream();
       const writer = control.writable.getWriter();
-      await writer.write(new TextEncoder().encode(`${JSON.stringify({ target: this.options.target, mode: this.options.mode })}\n`));
+      const { deviceId: device, deviceName: name, mode } = this.options;
+      await writer.write(new TextEncoder().encode(`${JSON.stringify({ device, name, mode })}\n`));
       const reply = await withTimeout(readJsonLine(control.readable.getReader()), timeout, 'relay reply');
       if (!reply.ok) throw new RejectedError(reply.error ?? 'rejected by relay');
 
@@ -146,7 +148,13 @@ export class WebTransportTransport implements Transport {
       .then((info) => {
         this.open = false;
         if (this.closed || this.wt !== wt) return;
-        const reason = (info as WebTransportCloseInfo | undefined)?.reason || 'connection lost';
+        const close = info as WebTransportCloseInfo | undefined;
+        const reason = close?.reason || 'connection lost';
+        // A newer connection from this device took over: don't fight it.
+        if (close?.closeCode === REPLACED_CLOSE_CODE) {
+          this.events.onClose(reason);
+          return;
+        }
         this.events.onClose(`${reason}, reconnecting`);
         this.scheduleReconnect();
       });

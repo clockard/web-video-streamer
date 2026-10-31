@@ -1,17 +1,18 @@
-import { capturePhotoWithNativeCamera, createStreamer, readPhotoInfo, type Streamer } from 'web-video-streamer';
+import { capturePhotoWithNativeCamera, createStreamer, getDeviceId, readPhotoInfo, type Streamer } from 'web-video-streamer';
 import { CameraMap, fmtDistance } from './map';
+import { StreamsPanel } from './streams';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const input = (id: string) => $<HTMLInputElement>(id);
 const num = (id: string) => (input(id).value === '' ? undefined : Number(input(id).value));
 
 const STORAGE_KEY = 'web-video-streamer-demo';
-const fields = ['relay', 'target', 'transport', 'wt-mode', 'wt-url', 'width', 'height', 'fps', 'bitrate', 'declination', 'mission', 'height-agl', 'max-range'];
+const fields = ['relay', 'device-id', 'device-name', 'admin-token', 'transport', 'wt-mode', 'wt-url', 'width', 'height', 'fps', 'bitrate', 'declination', 'mission', 'height-agl', 'max-range'];
 
 function loadSettings() {
   input('relay').value = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/relay`;
-  input('target').value = 'udp://127.0.0.1:5000';
-  input('wt-url').value = `https://${location.hostname}:4433/stream`;
+  input('device-id').value = getDeviceId().id;
+  input('wt-url').value = `https://${location.hostname === 'localhost' ? '127.0.0.1' : location.hostname}:4433/stream`;
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') as Record<string, string>;
     for (const f of fields) if (saved[f]) input(f).value = saved[f];
@@ -69,6 +70,26 @@ function log(message: string, level: 'info' | 'warning' | 'error' = 'info') {
   $('log').prepend(li);
 }
 
+/**
+ * WebTransport URL, with "localhost" replaced by 127.0.0.1. Browsers try ::1
+ * first for localhost and, unlike TCP, QUIC does not fall back to IPv4, so a
+ * relay unreachable over IPv6 loopback (e.g. WSL mirrored networking) fails.
+ */
+function webTransportUrl(): string | undefined {
+  const value = input('wt-url').value.trim();
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    if (url.hostname !== 'localhost') return value;
+    url.hostname = '127.0.0.1';
+    input('wt-url').value = url.toString();
+    log(`WebTransport URL uses 127.0.0.1 instead of localhost (QUIC does not fall back from IPv6 ::1)`);
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
+
 const fmt = (v: number | undefined, digits: number, unit = '') => (v === undefined ? '—' : `${v.toFixed(digits)}${unit}`);
 
 // Fetched up front: an await in the Start click handler would cost iOS the user
@@ -107,10 +128,11 @@ $('config').addEventListener('submit', async (e) => {
   streamer = createStreamer({
     relayUrl: input('relay').value,
     transport: input('transport').value as 'auto' | 'webtransport' | 'websocket',
-    webTransportUrl: input('wt-url').value || undefined,
+    webTransportUrl: webTransportUrl(),
     webTransportMode: input('wt-mode').value as 'datagram' | 'stream',
     serverCertificateHash: certificateHash,
-    target: input('target').value || undefined,
+    deviceId: input('device-id').value || undefined,
+    deviceName: input('device-name').value || undefined,
     width: num('width'),
     height: num('height'),
     fps: num('fps'),
@@ -185,3 +207,17 @@ $('stop').addEventListener('click', () => void streamer?.stop());
 
 if (!window.isSecureContext) log('This page is not served over HTTPS; camera and sensors will be unavailable.', 'error');
 loadSettings();
+
+const streams = new StreamsPanel(
+  $<HTMLOListElement>('streams'),
+  $('streams-status'),
+  '/relay',
+  () => input('device-id').value,
+  () => input('admin-token').value,
+);
+streams.start();
+$('streams-refresh').addEventListener('click', () => void streams.refresh());
+input('admin-token').addEventListener('change', () => {
+  saveSettings();
+  void streams.refresh();
+});

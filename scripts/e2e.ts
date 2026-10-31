@@ -2,7 +2,9 @@
  * End-to-end check: headless Chromium with a fake camera runs the demo page,
  * which streams through the Vite /relay proxy to the relay, which sends UDP to
  * a local socket. The captured transport stream is checked with ffprobe and
- * its KLV packets are parsed.
+ * its KLV packets are parsed. The device's UDP output is set through the
+ * relay's /streams API before starting, then changed mid-stream from the
+ * demo's "Relay streams" panel and a second socket must receive the stream.
  *
  *   npm run e2e
  *
@@ -33,7 +35,8 @@ const STREAM_SECONDS = Number(process.env.STREAM_SECONDS || 6);
 const LOCATION = { latitude: 38.8895, longitude: -77.0353 };
 const LIVE_FPS = 10;
 const LIVE_BITRATE_KBPS = 1000;
-const ORIENTATION ={ alpha: 315, beta: 80, gamma: 0 }; // facing north-east (45°), tilted 10° down
+const DEVICE_ID = 'e2e-device';
+const ORIENTATION = { alpha: 315, beta: 80, gamma: 0 }; // facing north-east (45°), tilted 10° down
 
 const pidOf = (p: Buffer) => ((p[1] & 0x1f) << 8) | p[2];
 
@@ -71,13 +74,18 @@ function tsOverhead(ts: Buffer) {
   return { videoPayload, patPackets };
 }
 
-async function main() {
-  // 1. UDP receiver
-  const udp = createSocket('udp4');
-  await new Promise<void>((r) => udp.bind(0, '127.0.0.1', r));
-  const udpPort = udp.address().port;
+async function udpReceiver() {
+  const socket = createSocket('udp4');
+  await new Promise<void>((r) => socket.bind(0, '127.0.0.1', r));
   const datagrams: Buffer[] = [];
-  udp.on('message', (m) => datagrams.push(m));
+  socket.on('message', (m) => datagrams.push(m));
+  return { socket, port: socket.address().port, datagrams };
+}
+
+async function main() {
+  // 1. UDP receivers: the initial output, and the one the stream is moved to at the end
+  const { socket: udp, port: udpPort, datagrams } = await udpReceiver();
+  const moved = await udpReceiver();
 
   // 2. Relay and demo dev server (which proxies /relay to the relay)
   const relay = await startRelay({
@@ -87,6 +95,13 @@ async function main() {
     allow: ['127.0.0.1:*'],
     log: (m) => console.log(`[relay] ${m}`),
   });
+  // Route the device to our receiver through the API, as an operator would.
+  const put = await fetch(`http://127.0.0.1:${RELAY_PORT}/streams/${DEVICE_ID}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ target: `udp://127.0.0.1:${udpPort}` }),
+  });
+  if (!put.ok) throw new Error(`PUT /streams failed: ${put.status} ${await put.text()}`);
   process.env.RELAY_PORT = String(RELAY_PORT);
   const vite = await createServer({
     configFile: resolve(import.meta.dirname, '../packages/demo/vite.config.ts'),
@@ -115,7 +130,9 @@ async function main() {
   page.on('console', (m) => console.log(`[page] ${m.text()}`));
   page.on('pageerror', (e) => console.log(`[page error] ${e.message}`));
   await page.goto(pageUrl);
-  await page.fill('#target', `udp://127.0.0.1:${udpPort}`);
+  await page.fill('#device-id', DEVICE_ID);
+  await page.click('details summary'); // Options
+  await page.fill('#device-name', 'E2E browser');
   await page.selectOption('#transport', TRANSPORT);
   await page.selectOption('#wt-mode', WT_MODE);
   await page.fill('#wt-url', `https://127.0.0.1:${WT_BROKEN ? 9 : WT_PORT}/stream`);
@@ -153,6 +170,18 @@ async function main() {
     Object.fromEntries(['m-pos', 'm-pose', 'm-center', 'm-fov', 's-fps', 's-bitrate', 's-transport', 's-codec', 's-frames'].map((id) => [id, document.getElementById(id)!.textContent])),
   );
   const log = await page.evaluate(() => [...document.querySelectorAll('#log li')].map((li) => li.textContent).reverse());
+  const relayView = relay.registry.info(DEVICE_ID);
+
+  // Move the live stream to the second receiver from the demo's streams panel.
+  const row = page.locator(`li[data-device="${DEVICE_ID}"]`);
+  await row.locator('.stream-status', { hasText: 'live' }).waitFor({ timeout: 5000 });
+  await row.locator('input').fill(`udp://127.0.0.1:${moved.port}`);
+  await row.locator('button[type="submit"]').click();
+  await row.locator('.stream-message', { hasText: 'Output updated' }).waitFor({ timeout: 5000 });
+  const datagramsBeforeMove = datagrams.length;
+  await page.waitForTimeout(2500); // > keyframe interval, so the new receiver gets SPS/PPS + IDR
+  const streamsPanel = await row.textContent();
+
   if (process.env.SCREENSHOT) await page.screenshot({ path: process.env.SCREENSHOT, fullPage: true });
   await page.click('#stop');
   await page.waitForTimeout(500);
@@ -161,9 +190,12 @@ async function main() {
   await vite.close();
   relay.close();
   udp.close();
+  moved.socket.close();
 
   console.log('\nDemo panel:', panel);
   console.log('Demo log:\n ', log.join('\n  '));
+  console.log('Relay view of the device:', relayView);
+  console.log('Streams panel row:', streamsPanel);
 
   // 4. Check the captured stream
   const ts = Buffer.concat(datagrams);
@@ -218,6 +250,24 @@ async function main() {
   const [actualFps, limitFps] = (panel['s-fps'] ?? '').match(/\d+/g)?.map(Number) ?? [];
   if (limitFps !== LIVE_FPS || Math.abs(actualFps - LIVE_FPS) > 2) failures.push(`frame rate not applied live: ${panel['s-fps']}`);
   if (!panel['s-bitrate']?.includes(`/ ${LIVE_BITRATE_KBPS} kbps`)) failures.push(`bitrate not applied live: ${panel['s-bitrate']}`);
+  if (relayView?.name !== 'E2E browser' || relayView.peer !== '127.0.0.1' || relayView.transport !== expectedTransport) {
+    failures.push(`relay stream info wrong: ${JSON.stringify(relayView)}`);
+  }
+
+  // The moved stream: the first receiver stops, the second gets a decodable stream with KLV.
+  if (datagrams.length > datagramsBeforeMove + 2) failures.push(`first receiver kept receiving after the move (${datagrams.length - datagramsBeforeMove} datagrams)`);
+  const movedFile = join(dir, 'moved.ts');
+  writeFileSync(movedFile, Buffer.concat(moved.datagrams));
+  const movedProbe = JSON.parse(
+    execFileSync('ffprobe', ['-v', 'error', '-count_frames', '-show_streams', '-of', 'json', movedFile], {
+      // It starts mid-GOP, so ffprobe complains about frames before the first keyframe.
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).toString(),
+  );
+  const movedVideo = movedProbe.streams.find((s: { codec_name?: string }) => s.codec_name === 'h264');
+  console.log(`\nMoved stream: ${moved.datagrams.length} datagrams, ${movedVideo?.nb_read_frames ?? 0} decodable frames -> ${movedFile}`);
+  if (!movedVideo || !(Number(movedVideo.nb_read_frames) > 0)) failures.push('second receiver got no decodable video after the move');
+  if (!movedProbe.streams.some((s: { codec_name?: string }) => s.codec_name === 'klv')) failures.push('second receiver got no KLV stream');
 
   if (failures.length) {
     console.error('\nFAILED:\n  ' + failures.join('\n  '));

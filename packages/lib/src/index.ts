@@ -1,8 +1,9 @@
 /**
  * web-video-streamer — stream a browser camera as MPEG-TS with MISB ST 0601
  * KLV metadata. Browsers cannot send UDP, so the transport stream is sent
- * over WebTransport or a WebSocket to a relay (see web-video-streamer-relay)
- * that forwards it to the UDP target.
+ * over WebTransport or a WebSocket to a relay (see web-video-streamer-relay).
+ * The library identifies the device; the relay decides which UDP output each
+ * device's stream goes to.
  */
 import { cameraLabel, openCamera, trackZoom, type CameraOptions } from './camera';
 import { FrameEncoder, isEncodingSupported } from './encoder';
@@ -17,6 +18,7 @@ import {
 import { encodeSt0601, type St0601Metadata } from './klv/st0601';
 import { computeFootprint, type Footprint, type FootprintOptions } from './footprint';
 import { requestOrientationPermission, SensorTracker, type CameraPose, type Position } from './sensors';
+import { getDeviceId } from './device';
 import { relayUrl, WebSocketTransport, type Transport, type TransportEvents } from './transport';
 import { isWebTransportSupported, WebTransportTransport, type WebTransportMode } from './webtransport';
 import { TsMuxer } from './ts/muxer';
@@ -38,8 +40,14 @@ export interface StreamerOptions extends CameraOptions {
   webTransportMode?: WebTransportMode;
   /** Base64 SHA-256 of the relay's self-signed WebTransport certificate (served by the relay at /cert-hash). */
   serverCertificateHash?: string;
-  /** UDP destination the relay should send to, e.g. "udp://10.0.0.5:5000". Optional if the relay has a default. */
-  target?: string;
+  /**
+   * Identifies this device to the relay, which maps it to a UDP output (the same
+   * device always gets the same output). Default: a random ID generated once and
+   * kept in localStorage (see getDeviceId).
+   */
+  deviceId?: string;
+  /** Human-readable label shown in the relay's stream list. */
+  deviceName?: string;
   /** Video bitrate in bits per second (default scales with resolution). */
   bitrate?: number;
   keyframeIntervalMs?: number;
@@ -110,6 +118,8 @@ export class Streamer {
   state: StreamerState = 'idle';
   stream?: MediaStream;
   fov?: FovResult;
+  /** The ID this streamer identifies itself to the relay with. */
+  readonly deviceId: string;
 
   private readonly listeners = new Map<keyof StreamerEvents, Set<Listener<never>>>();
   private sensors?: SensorTracker;
@@ -121,12 +131,16 @@ export class Streamer {
   private fovSource: FovSource = 'default';
   private frameSize = { width: 0, height: 0 };
   private videoStarted = false;
+  private readonly devicePersistent: boolean;
 
   private readonly options: StreamerOptions;
 
   constructor(options: StreamerOptions) {
     // Copied so setBitrate/setFrameRate don't modify the caller's object.
     this.options = { ...options };
+    const device = options.deviceId ? { id: options.deviceId, persistent: true } : getDeviceId();
+    this.deviceId = device.id;
+    this.devicePersistent = device.persistent;
   }
 
   on<K extends keyof StreamerEvents>(event: K, listener: Listener<StreamerEvents[K]>): () => void {
@@ -149,6 +163,9 @@ export class Streamer {
     const orientationPermission = requestOrientationPermission();
     this.setState('initializing');
     this.videoStarted = false;
+    if (!this.devicePersistent) {
+      this.emit('warning', 'Storage is unavailable, so this device ID only lasts for this page; the relay may assign a new output next time');
+    }
 
     try {
       if (!isEncodingSupported()) throw new Error('This browser does not support WebCodecs video encoding');
@@ -237,7 +254,7 @@ export class Streamer {
         }
       },
     };
-    const { transport: choice = 'auto', webTransportUrl, relayUrl: wsUrl, target } = this.options;
+    const { transport: choice = 'auto', webTransportUrl, relayUrl: wsUrl, deviceName } = this.options;
 
     if (choice === 'webtransport' || (choice === 'auto' && webTransportUrl)) {
       if (!isWebTransportSupported()) {
@@ -248,7 +265,12 @@ export class Streamer {
       } else {
         const wt = new WebTransportTransport(
           webTransportUrl,
-          { mode: this.options.webTransportMode ?? 'datagram', target, serverCertificateHash: this.options.serverCertificateHash },
+          {
+            mode: this.options.webTransportMode ?? 'datagram',
+            deviceId: this.deviceId,
+            deviceName,
+            serverCertificateHash: this.options.serverCertificateHash,
+          },
           events,
         );
         try {
@@ -262,7 +284,7 @@ export class Streamer {
     }
 
     if (!wsUrl) throw new Error('relayUrl is required for WebSocket');
-    const ws = new WebSocketTransport(relayUrl(wsUrl, target), events);
+    const ws = new WebSocketTransport(relayUrl(wsUrl, this.deviceId, deviceName), events);
     await ws.connect();
     return ws;
   }
@@ -445,4 +467,5 @@ export type { Footprint, FootprintOptions, GroundPoint } from './footprint';
 export { encodeSt0601, type St0601Metadata } from './klv/st0601';
 export { TsMuxer } from './ts/muxer';
 export { isEncodingSupported } from './encoder';
+export { getDeviceId } from './device';
 export { isWebTransportSupported, type WebTransportMode } from './webtransport';

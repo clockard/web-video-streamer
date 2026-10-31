@@ -1,5 +1,7 @@
 node_modules/
 dist/
+relay-mappings.json
+relay-mappings.json.tmp
 .vite/
 *.log
 .env

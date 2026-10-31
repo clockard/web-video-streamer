@@ -1,9 +1,11 @@
 import { createSocket } from 'node:dgram';
+import { lookup } from 'node:dns/promises';
 import { X509Certificate } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { WebTransport, quicheLoaded } from '@fails-components/webtransport';
 import { generateSelfSignedCertificate, SELF_SIGNED_VALIDITY_DAYS, type ServerCertificate } from '../src/cert';
 import { TsDatagramChunker } from '../src/relay';
+import { StreamRegistry } from '../src/streams';
 import { createWebTransportRelay, WEBTRANSPORT_PATH } from '../src/webtransport';
 
 describe('generateSelfSignedCertificate', () => {
@@ -33,6 +35,7 @@ describe('TsDatagramChunker', () => {
 describe('WebTransport relay', () => {
   let cert: ServerCertificate;
   let relay: Awaited<ReturnType<typeof createWebTransportRelay>>;
+  let registry: StreamRegistry;
   let url: string;
   const udp = createSocket('udp4');
   const received: Buffer[] = [];
@@ -42,23 +45,25 @@ describe('WebTransport relay', () => {
     cert = await generateSelfSignedCertificate(['127.0.0.1']);
     await new Promise<void>((r) => udp.bind(0, '127.0.0.1', r));
     udp.on('message', (m) => received.push(m));
-    relay = await createWebTransportRelay({ port: 0, host: '127.0.0.1', cert: cert.cert, privateKey: cert.privateKey, allow: ['127.0.0.1:*'] });
+    registry = new StreamRegistry({ allow: ['127.0.0.1:*'] });
+    relay = await createWebTransportRelay({ port: 0, host: '127.0.0.1', cert: cert.cert, privateKey: cert.privateKey, registry });
     url = `https://127.0.0.1:${relay.address()!.port}${WEBTRANSPORT_PATH}`;
   });
 
   afterAll(() => {
     relay?.close();
+    registry?.close();
     udp.close();
   });
 
-  async function open(target: string, mode: 'datagram' | 'stream') {
-    const wt = new WebTransport(url, {
+  async function open(device: unknown, mode: 'datagram' | 'stream', to = url) {
+    const wt = new WebTransport(to, {
       serverCertificateHashes: [{ algorithm: 'sha-256', value: Buffer.from(cert.sha256, 'base64') }],
     });
     await wt.ready;
     const control = await wt.createBidirectionalStream();
     const writer = control.writable.getWriter();
-    await writer.write(new TextEncoder().encode(`${JSON.stringify({ target, mode })}\n`));
+    await writer.write(new TextEncoder().encode(`${JSON.stringify({ device, mode })}\n`));
     const { value } = await control.readable.getReader().read();
     return { wt, reply: JSON.parse(new TextDecoder().decode(value)) as { ok?: boolean; error?: string } };
   }
@@ -69,18 +74,21 @@ describe('WebTransport relay', () => {
 
   it('forwards datagrams as UDP datagrams', async () => {
     received.length = 0;
-    const { wt, reply } = await open(`udp://127.0.0.1:${udp.address().port}`, 'datagram');
+    registry.setTarget('wt-datagram', `udp://127.0.0.1:${udp.address().port}`);
+    const { wt, reply } = await open('wt-datagram', 'datagram');
     expect(reply).toEqual({ ok: true });
     const writer = wt.datagrams.writable.getWriter();
     for (let i = 0; i < 3; i++) await writer.write(new Uint8Array(6 * 188).fill(0x47));
     await waitFor(() => received.length >= 3);
     expect(received.map((d) => d.length)).toEqual([1128, 1128, 1128]);
+    expect(registry.info('wt-datagram')).toMatchObject({ connected: true, transport: 'webtransport/datagram', peer: '127.0.0.1' });
     wt.close();
   });
 
   it('re-chunks stream data into TS-aligned datagrams', async () => {
     received.length = 0;
-    const { wt, reply } = await open(`udp://127.0.0.1:${udp.address().port}`, 'stream');
+    registry.setTarget('wt-stream', `udp://127.0.0.1:${udp.address().port}`);
+    const { wt, reply } = await open('wt-stream', 'stream');
     expect(reply).toEqual({ ok: true });
     const stream = await wt.createUnidirectionalStream();
     const writer = stream.getWriter();
@@ -95,9 +103,28 @@ describe('WebTransport relay', () => {
     wt.close();
   });
 
-  it('rejects targets that are not allowed', async () => {
-    const { wt, reply } = await open('udp://8.8.8.8:53', 'datagram');
-    expect(reply.error).toMatch(/not allowed/);
+  it('accepts IPv4 and IPv6 clients on the default dual-stack address', async () => {
+    const dual = await createWebTransportRelay({ port: 0, cert: cert.cert, privateKey: cert.privateKey, registry });
+    try {
+      const port = dual.address()!.port;
+      registry.setTarget('dual-v4', `udp://127.0.0.1:${udp.address().port}`);
+      registry.setTarget('dual-v6', `udp://127.0.0.1:${udp.address().port}`);
+      // The Node client cannot connect to a bracketed IPv6 literal, so use the hosts-file name for ::1.
+      const v6 = await lookup('ip6-localhost', { family: 6 }).then(() => 'ip6-localhost', () => undefined);
+      for (const [host, device, peer] of [['127.0.0.1', 'dual-v4', '127.0.0.1'], ...(v6 ? [[v6, 'dual-v6', '::1']] : [])]) {
+        const { wt, reply } = await open(device, 'datagram', `https://${host}:${port}${WEBTRANSPORT_PATH}`);
+        expect(reply).toEqual({ ok: true });
+        expect(registry.info(device)?.peer).toBe(peer);
+        wt.close();
+      }
+    } finally {
+      dual.close();
+    }
+  });
+
+  it('rejects sessions without a valid device id', async () => {
+    const { wt, reply } = await open('bad id!', 'datagram');
+    expect(reply.error).toMatch(/device id/);
     await wt.closed.catch(() => {});
   });
 });

@@ -15,9 +15,11 @@ export default defineConfig({
   server: {
     proxy: {
       '/relay': {
-        // http target with ws:true carries both the WebSocket and GET /relay/cert-hash.
+        // http target with ws:true carries the WebSocket, GET /relay/cert-hash and the /relay/streams API.
         target: `http://127.0.0.1:${relayPort}`,
         ws: true,
+        // Lets the relay show the phone's IP rather than 127.0.0.1 (trusted only from loopback).
+        xfwd: true,
         rewrite: (path) => path.replace(/^\/relay/, ''),
       },
     },

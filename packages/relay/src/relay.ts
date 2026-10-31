@@ -1,7 +1,7 @@
-import { createSocket, type Socket } from 'node:dgram';
 import type { Server as HttpServer } from 'node:http';
 import type { Server as HttpsServer } from 'node:https';
 import { WebSocketServer, type WebSocket } from 'ws';
+import { clientAddress, type StreamRegistry, type StreamSession } from './streams.js';
 
 /** 7 TS packets: the conventional MPEG-TS-over-UDP datagram size. */
 export const DATAGRAM_SIZE = 7 * 188;
@@ -18,13 +18,8 @@ export interface RelayOptions {
   server?: HttpServer | HttpsServer;
   /** URL path clients connect to. */
   path?: string;
-  /**
-   * Allowed UDP destinations as "host:port", "host:*" or "*".
-   * Prevents the relay from being used to send traffic to arbitrary hosts.
-   */
-  allow: string[];
-  /** Used when a client does not request a target. */
-  defaultTarget?: string;
+  /** Device → UDP output routing shared with the WebTransport relay. */
+  registry: StreamRegistry;
   log?: (msg: string) => void;
 }
 
@@ -46,18 +41,6 @@ export function isAllowed(target: RelayTarget, allow: string[]): boolean {
     const port = rule.slice(i + 1);
     return host === target.host && (port === '*' || Number(port) === target.port);
   });
-}
-
-/** Apply the default target and the allowlist; throws with a client-facing reason. */
-export function resolveTarget(
-  requested: string | null | undefined,
-  options: Pick<RelayOptions, 'allow' | 'defaultTarget'>,
-): RelayTarget {
-  const value = requested || options.defaultTarget;
-  if (!value) throw new Error('no target given');
-  const target = parseTarget(value);
-  if (!isAllowed(target, options.allow)) throw new Error(`target ${target.host}:${target.port} not allowed`);
-  return target;
 }
 
 /**
@@ -87,40 +70,31 @@ export function createRelay(options: RelayOptions): WebSocketServer {
   });
 
   wss.on('connection', (ws: WebSocket, req) => {
-    const peer = req.socket.remoteAddress;
-    const requested = new URL(req.url ?? '/', 'http://relay').searchParams.get('target');
+    const peer = clientAddress(req.socket.remoteAddress, req.headers['x-forwarded-for']);
+    const params = new URL(req.url ?? '/', 'http://relay').searchParams;
 
-    let target: RelayTarget;
+    let session: StreamSession;
     try {
-      target = resolveTarget(requested, options);
+      session = options.registry.attach({
+        deviceId: params.get('device'),
+        name: params.get('name'),
+        transport: 'websocket',
+        peer,
+        close: (code, reason) => ws.close(code, reason),
+      });
     } catch (err) {
       log(`rejecting ${peer}: ${(err as Error).message}`);
       ws.close(1008, (err as Error).message);
       return;
     }
 
-    const socket: Socket = createSocket(target.host.includes(':') ? 'udp6' : 'udp4');
-    let bytes = 0;
-    log(`${peer} -> udp://${target.host}:${target.port}`);
-
-    socket.on('error', (err) => {
-      log(`udp error for ${peer}: ${err.message}`);
-      ws.close(1011, 'udp error');
-    });
-
     ws.on('message', (data, isBinary) => {
       if (!isBinary) return;
       const buf = Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data as ArrayBuffer);
-      for (let i = 0; i < buf.length; i += DATAGRAM_SIZE) {
-        socket.send(buf.subarray(i, i + DATAGRAM_SIZE), target.port, target.host);
-      }
-      bytes += buf.length;
+      for (let i = 0; i < buf.length; i += DATAGRAM_SIZE) session.send(buf.subarray(i, i + DATAGRAM_SIZE));
     });
 
-    ws.on('close', () => {
-      log(`${peer} closed after ${(bytes / 1e6).toFixed(1)} MB`);
-      socket.close();
-    });
+    ws.on('close', () => session.detach());
   });
 
   return wss;
