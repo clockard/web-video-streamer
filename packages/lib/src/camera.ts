@@ -2,9 +2,10 @@ export interface CameraOptions {
   width?: number;
   height?: number;
   fps?: number;
-  /** 'environment' (rear, default) or 'user' (front), or a specific deviceId. */
+  /** 'environment' (rear, default) or 'user' (front). */
   facingMode?: 'environment' | 'user';
-  deviceId?: string;
+  /** A specific camera's MediaDeviceInfo.deviceId; overrides facingMode. */
+  cameraId?: string;
 }
 
 export async function openCamera(options: CameraOptions = {}): Promise<MediaStream> {
@@ -14,7 +15,7 @@ export async function openCamera(options: CameraOptions = {}): Promise<MediaStre
   return navigator.mediaDevices.getUserMedia({
     audio: false,
     video: {
-      ...(options.deviceId ? { deviceId: { exact: options.deviceId } } : { facingMode: { ideal: options.facingMode ?? 'environment' } }),
+      ...(options.cameraId ? { deviceId: { exact: options.cameraId } } : { facingMode: { ideal: options.facingMode ?? 'environment' } }),
       width: { ideal: options.width ?? 1280 },
       height: { ideal: options.height ?? 720 },
       frameRate: { ideal: options.fps ?? 30 },

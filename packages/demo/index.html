@@ -26,9 +26,10 @@
           <input id="relay" name="relay" autocomplete="off" spellcheck="false" />
         </label>
         <label>
-          UDP target
-          <input id="target" name="target" autocomplete="off" spellcheck="false" placeholder="udp://host:port" />
+          Device ID
+          <input id="device-id" name="device-id" autocomplete="off" spellcheck="false" pattern="[A-Za-z0-9._:\-]{1,64}" aria-describedby="device-hint" />
         </label>
+        <p id="device-hint" class="hint">The relay picks this device's UDP output by its ID (see Relay streams below). Letters, digits and <code>. _ : -</code>.</p>
         <div class="grid">
           <label>
             Transport
@@ -77,6 +78,8 @@
             <label>Height <input id="height" type="number" inputmode="numeric" value="720" /></label>
             <label>Declination (°) <input id="declination" type="number" step="0.1" value="0" /></label>
             <label>Mission ID <input id="mission" autocomplete="off" /></label>
+            <label>Device name <input id="device-name" autocomplete="off" placeholder="shown in the relay list" /></label>
+            <label>Relay admin token <input id="admin-token" type="password" autocomplete="off" placeholder="if the relay has ADMIN_TOKEN" /></label>
           </div>
         </details>
         <div class="actions">
@@ -118,6 +121,15 @@
           <dt>Sent</dt>
           <dd id="s-sent">—</dd>
         </dl>
+      </section>
+
+      <section class="streams" aria-labelledby="streams-title">
+        <div class="streams-head">
+          <h2 id="streams-title">Relay streams</h2>
+          <button type="button" id="streams-refresh" class="secondary small">Refresh</button>
+        </div>
+        <p id="streams-status" class="hint">Loading…</p>
+        <ol id="streams" class="stream-list"></ol>
       </section>
 
       <ol id="log" class="log" aria-live="polite"></ol>

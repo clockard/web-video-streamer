@@ -55,8 +55,9 @@ export class WebSocketTransport implements Transport {
             return;
           }
           if (this.closed) return;
-          // 1008 = policy violation: the relay rejected our target, retrying will not help.
-          if (e.code === 1008) {
+          // 1008 = the relay rejected this device; 4001 = a newer connection from this
+          // device replaced us. Retrying will not help in either case.
+          if (e.code === 1008 || e.code === REPLACED_CLOSE_CODE) {
             this.events.onClose(reason);
             return;
           }
@@ -90,11 +91,15 @@ export class WebSocketTransport implements Transport {
   }
 }
 
-/** Build the relay URL carrying the requested UDP target. */
-export function relayUrl(relay: string, target?: string): string {
+/** Close code the relay uses when a newer connection from the same device takes over. */
+export const REPLACED_CLOSE_CODE = 4001;
+
+/** Build the relay WebSocket URL carrying the device ID (and optional name). */
+export function relayUrl(relay: string, deviceId: string, deviceName?: string): string {
   const url = new URL(relay, typeof location !== 'undefined' ? location.href : undefined);
   if (url.protocol === 'http:') url.protocol = 'ws:';
   if (url.protocol === 'https:') url.protocol = 'wss:';
-  if (target) url.searchParams.set('target', target);
+  url.searchParams.set('device', deviceId);
+  if (deviceName) url.searchParams.set('name', deviceName);
   return url.toString();
 }

@@ -3,21 +3,23 @@
  *
  * Protocol, per session:
  *  1. The client opens a bidirectional control stream and writes one JSON
- *     line: {"target": "udp://host:port", "mode": "datagram" | "stream"}.
- *  2. The relay answers {"ok": true} or {"error": "..."} (then closes).
+ *     line: {"device": "<id>", "name"?: "<label>", "mode": "datagram" | "stream"}.
+ *  2. The relay answers {"ok": true} or {"error": "..."} (then closes). The
+ *     device's UDP output comes from the stream registry, not the client.
  *  3. Video arrives either as datagrams (each a whole number of TS packets,
  *     forwarded as one UDP datagram) or on one unidirectional stream
  *     (re-chunked into 1316-byte datagrams).
  */
-import { createSocket, type Socket } from 'node:dgram';
 import { Http3Server } from '@fails-components/webtransport';
 import { randomBytes } from 'node:crypto';
-import { resolveTarget, TsDatagramChunker, type RelayOptions, type RelayTarget } from './relay.js';
+import { TsDatagramChunker, type RelayOptions } from './relay.js';
+import type { StreamSession } from './streams.js';
 
 export const WEBTRANSPORT_PATH = '/stream';
 
-export interface WebTransportRelayOptions extends Pick<RelayOptions, 'allow' | 'defaultTarget' | 'log'> {
+export interface WebTransportRelayOptions extends Pick<RelayOptions, 'registry' | 'log'> {
   port: number;
+  /** Listen address (default "::", which accepts IPv4 and IPv6; Windows resolves localhost to ::1 first). */
   host?: string;
   cert: string;
   privateKey: string;
@@ -30,11 +32,19 @@ interface Session {
   incomingBidirectionalStreams: ReadableStream<{ readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }>;
   incomingUnidirectionalStreams: ReadableStream<ReadableStream<Uint8Array>>;
   datagrams: { readable: ReadableStream<Uint8Array> };
+  peerAddress?: string;
 }
 
 interface ControlRequest {
-  target?: string;
+  device?: unknown;
+  name?: unknown;
   mode?: 'datagram' | 'stream';
+}
+
+/** "1.2.3.4:5678" or "[::1]:5678" → the host part. */
+function peerHost(address: string | undefined): string | undefined {
+  const host = address?.match(/^\[(.*)\]:\d+$/)?.[1] ?? address?.match(/^([^:]*):\d+$/)?.[1] ?? address;
+  return host?.replace(/^::ffff:/, '');
 }
 
 /** Read one newline-terminated JSON message from a stream. */
@@ -54,7 +64,7 @@ export async function createWebTransportRelay(options: WebTransportRelayOptions)
   const log = options.log ?? (() => {});
   const server = new Http3Server({
     port: options.port,
-    host: options.host ?? '0.0.0.0',
+    host: options.host ?? '::',
     secret: randomBytes(16).toString('hex'),
     cert: options.cert,
     privKey: options.privateKey,
@@ -87,27 +97,25 @@ async function handleSession(session: Session, options: WebTransportRelayOptions
   const writer = control.writable.getWriter();
   const reply = (msg: object) => writer.write(new TextEncoder().encode(`${JSON.stringify(msg)}\n`));
 
-  let target: RelayTarget;
+  let device: StreamSession;
   let mode: 'datagram' | 'stream';
   try {
     const request = await readJsonLine(control.readable.getReader());
-    target = resolveTarget(request.target, options);
     mode = request.mode === 'stream' ? 'stream' : 'datagram';
+    device = options.registry.attach({
+      deviceId: request.device,
+      name: request.name,
+      transport: `webtransport/${mode}`,
+      peer: peerHost(session.peerAddress),
+      close: (code, reason) => session.close({ closeCode: code, reason }),
+    });
   } catch (err) {
     log(`rejecting webtransport session: ${(err as Error).message}`);
     await reply({ error: (err as Error).message }).catch(() => {});
     session.close({ closeCode: 1, reason: (err as Error).message });
     return;
   }
-
-  const socket: Socket = createSocket(target.host.includes(':') ? 'udp6' : 'udp4');
-  const send = (datagram: Uint8Array) => socket.send(datagram, target.port, target.host);
-  let bytes = 0;
-  socket.on('error', (err) => {
-    log(`udp error: ${err.message}`);
-    session.close({ closeCode: 2, reason: 'udp error' });
-  });
-  log(`webtransport (${mode}) -> udp://${target.host}:${target.port}`);
+  const send = (datagram: Uint8Array) => device.send(datagram);
   await reply({ ok: true });
 
   const pump = async () => {
@@ -117,7 +125,6 @@ async function handleSession(session: Session, options: WebTransportRelayOptions
         const { value, done } = await reader.read();
         if (done) return;
         send(value);
-        bytes += value.byteLength;
       }
     } else {
       const chunker = new TsDatagramChunker(send);
@@ -130,7 +137,6 @@ async function handleSession(session: Session, options: WebTransportRelayOptions
           const chunk = await reader.read();
           if (chunk.done) break;
           chunker.push(chunk.value);
-          bytes += chunk.value.byteLength;
         }
       }
     }
@@ -138,6 +144,5 @@ async function handleSession(session: Session, options: WebTransportRelayOptions
 
   await Promise.race([pump(), session.closed]).catch(() => {});
   await session.closed.catch(() => {});
-  log(`webtransport session closed after ${(bytes / 1e6).toFixed(1)} MB`);
-  socket.close();
+  device.detach();
 }

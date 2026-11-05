@@ -268,3 +268,112 @@ button:disabled {
 
 .log .error { color: var(--err); }
 .log .warning { color: var(--warn); }
+
+h2 {
+  font-size: 1rem;
+  margin: 0;
+}
+
+.streams {
+  display: grid;
+  gap: 8px;
+}
+
+.streams-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+button.small {
+  flex: none;
+  padding: 4px 12px;
+  font-size: 0.85rem;
+}
+
+#streams-status[data-level='error'],
+.stream-message[data-level='error'] {
+  color: var(--err);
+}
+
+.stream-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.stream {
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  font-size: 0.85rem;
+}
+
+.stream-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.stream-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.stream-title code {
+  font-weight: 600;
+}
+
+.tag {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  white-space: nowrap;
+}
+
+.stream-status {
+  flex: none;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.stream-status[data-live='true'] {
+  color: var(--ok);
+}
+
+.stream-meta {
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.stream-edit {
+  display: flex;
+  gap: 6px;
+}
+
+.stream-edit input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: ui-monospace, monospace;
+}
+
+.stream-edit button {
+  flex: none;
+  padding: 6px 12px;
+}
+
+.stream-message:empty {
+  display: none;
+}
