@@ -1,6 +1,6 @@
 # web-video-streamer-relay
 
-WebTransport (HTTP/3) and WebSocket → UDP relay for [`web-video-streamer`](https://www.npmjs.com/package/web-video-streamer). Browsers can't send UDP, so the library sends its MPEG-TS stream here, identified by a device ID, and the relay forwards it unchanged to that device's UDP output. New devices get a port from a pool automatically; mappings are saved to a file and can be changed (even mid-stream) through the `/streams` HTTP API. Only outputs on an allowlist are used.
+WebTransport (HTTP/3) and WebSocket → UDP relay for [`web-video-streamer`](https://www.npmjs.com/package/web-video-streamer). Browsers can't send UDP, so the library sends its MPEG-TS stream here, identified by a device ID, and the relay forwards it unchanged to that device's UDP output. New devices get a port from a pool automatically; mappings are saved to a file and can be changed (even mid-stream) through the `/streams` HTTP API. Only outputs on the `ALLOW` list are used (by default any address, so narrow it or set `ADMIN_TOKEN` on a shared network).
 
 ```sh
 ALLOW="10.0.0.5:*" AUTO_HOST=10.0.0.5 npx web-video-streamer-relay
@@ -11,7 +11,7 @@ curl -s localhost:8090/streams   # devices and their outputs
 |---|---|---|
 | `PORT` | 8090 | WebSocket and HTTP (`/cert-hash`, `/streams`) port, TCP |
 | `WT_PORT` | 4433 | WebTransport port, UDP (`off` disables) |
-| `ALLOW` | `127.0.0.1:*` | Allowed UDP destinations (`host:port`, `host:*`, `*`) |
+| `ALLOW` | `*` | Allowed UDP destinations (`host:port`, `host:*`, `*` = any address). Set `ADMIN_TOKEN` if others can reach the `/streams` API |
 | `AUTO_HOST` | `127.0.0.1` | Host of outputs auto-assigned to new devices |
 | `AUTO_PORTS` | `5000-5099` | Port range for auto-assigned outputs |
 | `MAPPINGS_FILE` | `./relay-mappings.json` | Device → output mappings kept across restarts (`off` = memory only) |

@@ -82,10 +82,12 @@ export class StreamsPanel {
 
   private render(streams: StreamInfo[]) {
     const seen = new Set<string>();
+    const order: HTMLLIElement[] = [];
     const own = this.ownDeviceId();
     for (const s of streams) {
       seen.add(s.deviceId);
       const row = this.rows.get(s.deviceId) ?? this.createRow(s.deviceId);
+      order.push(row.el);
       row.title.replaceChildren(el('code', undefined, s.deviceId));
       if (s.name) row.title.append(` ${s.name}`);
       if (s.deviceId === own) row.title.append(el('span', 'tag', 'this device'));
@@ -100,13 +102,28 @@ export class StreamsPanel {
       if (document.activeElement !== row.input && row.input.value === row.synced) row.input.value = s.target;
       row.synced = s.target;
       row.forget.hidden = s.connected;
-      this.list.append(row.el); // keeps the relay's order (live first)
     }
     for (const [id, row] of this.rows) {
       if (!seen.has(id)) {
         row.el.remove();
         this.rows.delete(id);
       }
+    }
+    this.reorder(order);
+  }
+
+  /**
+   * Keeps the relay's order (live first). Moving a row in the DOM blurs a focused input inside it,
+   * which would interrupt an edit (and close the keyboard on phones), so rows are only moved when
+   * the order actually changed and nothing in the list has focus; until then new rows go at the end.
+   */
+  private reorder(order: HTMLLIElement[]) {
+    const current = this.list.children;
+    if (order.length === current.length && order.every((row, i) => current[i] === row)) return;
+    if (this.list.contains(document.activeElement)) {
+      for (const row of order) if (!row.isConnected) this.list.append(row);
+    } else {
+      this.list.replaceChildren(...order);
     }
   }
 

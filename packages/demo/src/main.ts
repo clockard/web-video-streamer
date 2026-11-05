@@ -153,6 +153,7 @@ $('config').addEventListener('submit', async (e) => {
     $<HTMLButtonElement>('calibrate').disabled = active;
     $('overlay').hidden = state !== 'streaming';
     log(`State: ${state}`);
+    setKeepAwake(active);
 
     // The map follows the sensors more often than the 1 Hz KLV rate.
     clearInterval(mapTimer);
@@ -204,6 +205,42 @@ $('config').addEventListener('submit', async (e) => {
 });
 
 $('stop').addEventListener('click', () => void streamer?.stop());
+
+// Keep the screen on while streaming. The browser releases the wake lock whenever the page is
+// hidden, so it is re-requested when the page becomes visible again.
+let keepAwake = false;
+let wakeLock: WakeLockSentinel | undefined;
+let wakeLockWarned = false;
+
+function setKeepAwake(on: boolean) {
+  keepAwake = on;
+  if (on) void acquireWakeLock();
+  else {
+    void wakeLock?.release().catch(() => {});
+    wakeLock = undefined;
+  }
+}
+
+async function acquireWakeLock() {
+  if (!keepAwake || (wakeLock && !wakeLock.released) || document.visibilityState !== 'visible') return;
+  if (!('wakeLock' in navigator)) {
+    if (!wakeLockWarned) log('Screen wake lock not supported; the screen may turn off while streaming', 'warning');
+    wakeLockWarned = true;
+    return;
+  }
+  try {
+    const sentinel = await navigator.wakeLock.request('screen');
+    if (!keepAwake) {
+      void sentinel.release();
+      return;
+    }
+    wakeLock = sentinel;
+  } catch (err) {
+    log(`Screen wake lock unavailable: ${(err as Error).message}`, 'warning');
+  }
+}
+
+document.addEventListener('visibilitychange', () => void acquireWakeLock());
 
 if (!window.isSecureContext) log('This page is not served over HTTPS; camera and sensors will be unavailable.', 'error');
 loadSettings();

@@ -73,7 +73,7 @@ The demo page has:
 * **Options:** capture size, declination, mission ID, device name (shown in the relay list), relay admin token.
 * **Panels:** position, altitude, azimuth/elevation/roll, frame centre distance and slant range, FOV and its source, camera, frame rate and bitrate (actual / target), transport, H.264 profile, frames encoded/dropped, bytes sent, and a log of events and warnings.
 
-Settings are remembered in the browser.
+While streaming, the page holds a screen wake lock so the phone doesn't sleep (it is re-acquired when the page becomes visible again; a warning is logged where the Wake Lock API isn't supported). Settings are remembered in the browser.
 
 ### End-to-end test
 
@@ -256,7 +256,7 @@ TLS_CERT=cert.pem TLS_KEY=key.pem npx web-video-streamer-relay
 |---|---|---|
 | `PORT` | 8090 | WebSocket and HTTP (`/cert-hash`, `/streams`) port, TCP |
 | `WT_PORT` | 4433 | WebTransport port, **UDP** (`off` disables) |
-| `ALLOW` | `127.0.0.1:*` | Allowed UDP destinations (`host:port`, `host:*`, `*`) |
+| `ALLOW` | `*` | Allowed UDP destinations (`host:port`, `host:*`, `*` = any address). Set `ADMIN_TOKEN` if others can reach the `/streams` API |
 | `AUTO_HOST` | `127.0.0.1` | Host of outputs auto-assigned to new devices |
 | `AUTO_PORTS` | `5000-5099` | Port range for auto-assigned outputs |
 | `MAPPINGS_FILE` | `./relay-mappings.json` | Where device → output mappings are kept across restarts (`off` = memory only) |
@@ -264,7 +264,7 @@ TLS_CERT=cert.pem TLS_KEY=key.pem npx web-video-streamer-relay
 | `TLS_CERT` / `TLS_KEY` | — | PEM certificate and key |
 | `WT_HOSTNAMES` | localhost + this host's IPs | Names in the generated certificate |
 
-The relay never sends to a destination not on `ALLOW`, whether auto-assigned or set through the API, so it can't be used to send UDP to arbitrary hosts. It warns at startup if the auto-assign pool isn't covered by `ALLOW`.
+The relay never sends to a destination not on `ALLOW`, whether auto-assigned or set through the API. The default, `*`, allows any address, so anyone who can reach the `/streams` API can point streams at any host; on a shared network, narrow `ALLOW` (e.g. `10.0.0.5:*`) or set `ADMIN_TOKEN`. It warns at startup if the auto-assign pool isn't covered by `ALLOW`.
 
 ### Routing (device → UDP output)
 

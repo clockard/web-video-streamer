@@ -3,7 +3,7 @@
  * Environment:
  *   PORT            WebSocket / HTTP listen port (default 8090)
  *   WT_PORT         WebTransport (HTTP/3, UDP) port (default 4433; "off" disables)
- *   ALLOW           comma-separated allowed UDP outputs, e.g. "10.0.0.5:5000,127.0.0.1:*" (default "127.0.0.1:*")
+ *   ALLOW           comma-separated allowed UDP outputs, e.g. "10.0.0.5:5000,127.0.0.1:*" (default "*", any address)
  *   AUTO_HOST       host for outputs auto-assigned to new devices (default 127.0.0.1)
  *   AUTO_PORTS      port range for auto-assigned outputs (default 5000-5099)
  *   MAPPINGS_FILE   JSON file keeping device -> output mappings (default ./relay-mappings.json; "off" = memory only)
@@ -18,7 +18,7 @@ import { startRelay } from './server.js';
 import { parsePortRange } from './streams.js';
 
 const log = (msg: string) => console.log(`${new Date().toISOString()} ${msg}`);
-const allow = (process.env.ALLOW ?? '127.0.0.1:*').split(',').map((s) => s.trim()).filter(Boolean);
+const allow = (process.env.ALLOW ?? '*').split(',').map((s) => s.trim()).filter(Boolean);
 const mappingsFile = process.env.MAPPINGS_FILE ?? 'relay-mappings.json';
 
 const relay = await startRelay({
