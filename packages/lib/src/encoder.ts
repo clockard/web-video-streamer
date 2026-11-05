@@ -7,6 +7,8 @@
  * since the encoder started) so the muxer can align video and KLV.
  */
 
+import { FramePacer } from './pacer';
+
 export interface EncoderOptions {
   bitrate?: number;
   fps?: number;
@@ -64,7 +66,7 @@ export class FrameEncoder {
   private needsReconfigure = false;
   private baselineOnly = false;
   private lastOutputUs = -Infinity;
-  private lastFrameUs = -Infinity;
+  private readonly pacer: FramePacer;
   private stopSource?: () => void;
   private readonly startMs = performance.now();
 
@@ -75,7 +77,9 @@ export class FrameEncoder {
     private readonly onError: (err: Error) => void,
     /** Bytes waiting to be sent; used for backpressure. */
     private readonly queuedBytes: () => number = () => 0,
-  ) {}
+  ) {
+    this.pacer = new FramePacer(this.fps);
+  }
 
   /** Microseconds since the encoder was created: the shared stream clock. */
   nowUs(): number {
@@ -101,6 +105,7 @@ export class FrameEncoder {
   /** Maximum encoded frame rate. Frames arriving faster than this are skipped. */
   setFrameRate(fps: number): void {
     this.options.fps = fps;
+    this.pacer.fps = fps;
     this.needsReconfigure = true;
   }
 
@@ -138,10 +143,8 @@ export class FrameEncoder {
       return;
     }
     const timestamp = this.nowUs();
-    // Enforce the target frame rate when the camera delivers frames faster
-    // (allowing 10% jitter so a 30 fps camera is not halved at 30 fps).
-    if (timestamp - this.lastFrameUs < 900_000 / this.fps) return;
-    this.lastFrameUs = timestamp;
+    // Enforce the target frame rate when the camera delivers frames faster.
+    if (!this.pacer.accept(timestamp)) return;
     this.busy = true;
     let frame: VideoFrame | undefined;
     try {

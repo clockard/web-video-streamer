@@ -23,6 +23,17 @@ Programmatic use: `startRelay()`, `StreamRegistry`, `createRelay()`, `createWebT
 
 Requires Node 22+. WebTransport uses a native libquiche addon (prebuilt for Linux, macOS and Windows on x64, plus arm on Linux and macOS).
 
+npm 12+ blocks dependency install scripts by default, which leaves that addon uninstalled and WebTransport fails to load (`Cannot find module '../build/Release/webtransport.node'`). Allow it:
+
+```sh
+# installed in a project: records it under allowScripts in your package.json
+npm install web-video-streamer-relay
+npm approve-scripts @fails-components/webtransport-transport-http3-quiche && npm rebuild
+
+# run without installing
+npx --allow-scripts=@fails-components/webtransport-transport-http3-quiche web-video-streamer-relay
+```
+
 Full documentation: https://github.com/clockard/web-video-streamer#readme
 
 MIT License
