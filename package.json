@@ -28,5 +28,9 @@
     "typescript": "^5.9.3",
     "vite": "^8.3.5",
     "vitest": "^5.0.5"
+  },
+  "allowScripts": {
+    "@fails-components/webtransport-transport-http3-quiche@1.6.11": true,
+    "esbuild@0.28.2": true
   }
 }

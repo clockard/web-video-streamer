@@ -16,6 +16,10 @@ jobs:
           node-version-file: '.nvmrc'
           cache: npm
 
+      # Same npm as the Release workflow (publish.yml), so install-script
+      # policy (allowScripts) problems show up here, not at release time.
+      - run: npm install -g npm@12
+
       # ffprobe/ffmpeg let the muxer test check real output; without them
       # that test is skipped rather than failing.
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
@@ -51,6 +55,10 @@ jobs:
         with:
           node-version-file: '.nvmrc'
           cache: npm
+
+      # Same npm as the Release workflow (publish.yml), so install-script
+      # policy (allowScripts) problems show up here, not at release time.
+      - run: npm install -g npm@12
 
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 

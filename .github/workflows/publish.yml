@@ -47,9 +47,11 @@ jobs:
             exit 1
           fi
 
-      # Trusted Publishing needs npm 11.5.1+; Node 22's bundled npm may be
-      # older, so upgrade explicitly rather than relying on whatever ships.
-      - run: npm install -g npm@latest
+      # Trusted Publishing needs npm 11.5.1+; Node 22's bundled npm is older.
+      # Pinned to a major (not @latest) and kept in step with ci.yml, so CI
+      # tests with the same npm — npm 12 blocks dependency install scripts
+      # not listed in package.json's allowScripts.
+      - run: npm install -g npm@12
 
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 

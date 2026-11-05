@@ -28,6 +28,8 @@ npx web-video-streamer-relay            # relay (or: npm install web-video-strea
 
 The library ships ES module and UMD builds with TypeScript declarations. The relay is a Node 22+ command, `web-video-streamer-relay`, configured by environment variables (see [Relay](#relay)). It also exports a programmatic API: `startRelay()`, `StreamRegistry`, `createRelay()`, `createWebTransportRelay()` and `generateSelfSignedCertificate()`.
 
+With npm 12+, which blocks dependency install scripts by default, allow the relay's native WebTransport addon: `npx --allow-scripts=@fails-components/webtransport-transport-http3-quiche web-video-streamer-relay`, or in a project `npm approve-scripts @fails-components/webtransport-transport-http3-quiche && npm rebuild`.
+
 ## Packages
 
 | Package | Description |
@@ -40,6 +42,8 @@ The library ships ES module and UMD builds with TypeScript declarations. The rel
 ## Development
 
 Requires Node 22+ (`.nvmrc`). The relay's WebTransport server (`@fails-components/webtransport`) uses a native libquiche addon. Prebuilt binaries exist for Linux, macOS and Windows on x64 (and arm on Linux and macOS); other platforms compile it on install (needs CMake and a C++ toolchain).
+
+The repo's `allowScripts` in `package.json` permits the install scripts of that addon and esbuild, pinned to their locked versions; after upgrading either, run `npm approve-scripts <pkg>` (npm 12+) or its install script is skipped. CI and Release both use npm 12 so this shows up on PRs.
 
 ```sh
 npm install
