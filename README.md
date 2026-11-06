@@ -1,12 +1,12 @@
 # web-video-streamer
 
-Stream a phone (or any browser) camera to a remote server as **MPEG-TS over UDP** with **MISB ST 0601 KLV** metadata: location, camera pointing direction, and horizontal/vertical field of view, inserted once per second.
+Stream a phone (or any browser) camera and microphone to a remote server as **MPEG-TS over UDP** with **MISB ST 0601 KLV** metadata: location, camera pointing direction, and horizontal/vertical field of view, inserted once per second.
 
 ```
  Browser (library)                       Relay (Node)                 Receiver
 ┌───────────────────────────────┐       ┌─────────────────────┐      ┌──────────────┐
 │ camera ─► WebCodecs H.264 ─┐  │  WT   │ WebTransport :4433  ├─┐    │ ffplay / VLC │
-│                            ├► TS ───►│   (UDP / QUIC)      │ │UDP │ QGIS FMV     │
+│ mic ─► WebCodecs AAC/Opus ─├► TS ───►│   (UDP / QUIC)      │ │UDP │ QGIS FMV     │
 │ GPS, compass, photo EXIF   │  │  or   │ WebSocket :8090     ├─┴───►│ STANAG 4609  │
 │  ─► ST 0601 KLV ───────────┘  ├──────►│   (TCP)             │      │ tools        │
 └───────────────────────────────┘  WS   │ device → UDP map    │      └──────────────┘
@@ -74,18 +74,18 @@ The demo page has:
 * **Live controls:** frame-rate and bitrate sliders, plus camera height above ground and max range for the footprint. All apply while streaming.
 * **Map (OpenStreetMap):** camera position, GPS accuracy circle, and the ground footprint, with a dot where the optical axis meets the ground. The outline is dashed when part of the view is cut off at the max range. It follows the camera until you pan; ◎ re-centres it.
 * **Relay streams:** every device the relay knows, live ones first, with source IP, transport, bitrate, and an editable UDP output (**Save** moves a live stream immediately). Offline devices can be forgotten, which frees their port. Polled every 2 s. If the relay has `ADMIN_TOKEN`, enter it under Options.
-* **Options:** capture size, declination, mission ID, device name (shown in the relay list), relay admin token.
-* **Panels:** position, altitude, azimuth/elevation/roll, frame centre distance and slant range, FOV and its source, camera, frame rate and bitrate (actual / target), transport, H.264 profile, frames encoded/dropped, bytes sent, and a log of events and warnings.
+* **Options:** capture size, declination, mission ID, device name (shown in the relay list), relay admin token, and an **Include microphone audio** checkbox (on by default).
+* **Panels:** position, altitude, azimuth/elevation/roll, frame centre distance and slant range, FOV and its source, camera, frame rate and bitrate (actual / target), transport, H.264 profile, audio codec and bitrate, frames encoded/dropped, bytes sent, and a log of events and warnings.
 
 While streaming, the page holds a screen wake lock so the phone doesn't sleep (it is re-acquired when the page becomes visible again; a warning is logged where the Wake Lock API isn't supported). Settings are remembered in the browser.
 
 ### End-to-end test
 
-`npm run e2e` runs the whole chain: headless Chromium with a fake camera, the demo page, the relay, and local UDP sockets. It routes the device to the first socket through `PUT /streams`, changes frame rate and bitrate mid-stream, then moves the stream to a second socket from the demo's **Relay streams** panel. It checks:
-* ffprobe finds H.264 + KLV in the first capture, and the video decodes with no errors;
+`npm run e2e` runs the whole chain: headless Chromium with a fake camera and microphone, the demo page, the relay, and local UDP sockets. It routes the device to the first socket through `PUT /streams`, changes frame rate and bitrate mid-stream, then moves the stream to a second socket from the demo's **Relay streams** panel. It checks:
+* ffprobe finds H.264 + KLV + audio (Opus in Linux Chromium, which cannot encode AAC) in the first capture, the video and audio decode with no errors, and the audio covers the stream and starts with the video;
 * the KLV packets parse with valid checksums, and the position, heading, elevation, footprint and transport are correct;
 * the live changes took effect, and the relay reports the device's name, source IP and transport;
-* after the move, the first socket stops receiving and the second gets decodable video and KLV.
+* after the move, the first socket stops receiving and the second gets decodable video, audio and KLV.
 
 | Variable | |
 |---|---|
@@ -93,7 +93,8 @@ While streaming, the page holds a screen wake lock so the phone doesn't sleep (i
 | `TRANSPORT` | `auto` (default), `webtransport` or `websocket` |
 | `WT_MODE` | `datagram` (default) or `stream` |
 | `WT_BROKEN=1` | Unreachable WebTransport URL: checks the fallback to WebSocket |
-| `FALLBACK=1` | Hides MediaStreamTrackProcessor to test the Safari/Firefox frame path |
+| `FALLBACK=1` | Hides MediaStreamTrackProcessor to test the Safari/Firefox frame and audio (AudioWorklet) paths |
+| `AUDIO=0` | Unticks the demo's audio option and checks the stream has no audio |
 | `STREAM_SECONDS` | Streaming time (default 6) |
 | `SCREENSHOT` | Save a screenshot of the page to this path |
 
@@ -101,7 +102,7 @@ While streaming, the page holds a screen wake lock so the phone doesn't sleep (i
 
 * **CI** (`.github/workflows/ci.yml`) runs on every push to `main` and on pull requests:
   * `npm run verify`, with ffmpeg installed so the muxer test checks real output;
-  * the browser e2e test in five variants: WebTransport datagrams, WebTransport stream, WebSocket, fallback from a broken WebTransport URL to WebSocket, and the `<video>` frame path.
+  * the browser e2e test in six variants: WebTransport datagrams, WebTransport stream, WebSocket, fallback from a broken WebTransport URL to WebSocket, the `<video>` frame path, and audio off.
   * A failing e2e variant uploads its screenshot.
 * **Release** (`.github/workflows/publish.yml`) is started by hand: Actions → Release → Run workflow, with a version like `0.2.0`. It then:
   1. sets both packages' versions;
@@ -125,14 +126,16 @@ const streamer = createStreamer({
   // serverCertificateHash: '<base64>',                    // only for a self-signed relay certificate (GET /cert-hash)
   deviceId: 'phone-chris',                                // optional; default is a random ID kept in localStorage
   deviceName: 'Chris’s phone',                           // optional label for the relay's list
-  videoElement: document.querySelector('video')!, // optional preview
+  videoElement: document.querySelector('video')!, // optional preview (kept muted)
+  // audio: false,                                     // microphone audio is on by default
+  // audio: { bitrate: 96_000, channels: 2, constraints: { noiseSuppression: false } },
   calibrationPhoto: calibrationPhoto ?? undefined,
 });
 
 streamer.on('state', (s) => console.log(s));       // initializing | streaming | reconnecting | stopped | error
 streamer.on('metadata', (m) => console.log(m));    // position, pose, fov, footprint, once per KLV packet
 streamer.on('fov', (f) => console.log(f));         // FOV and its source, when estimated or the frame size changes
-streamer.on('stats', (s) => console.log(s));       // fps, bitrate (actual/target), transport, codec, frames dropped, bytes sent
+streamer.on('stats', (s) => console.log(s));       // fps, bitrate (actual/target), transport, codec, audio codec, frames dropped, bytes sent
 streamer.on('warning', console.warn);
 streamer.on('error', console.error);
 
@@ -148,7 +151,7 @@ streamer.deviceId;                                 // the ID the relay routes by
 await streamer.stop();
 ```
 
-Also exported: `getDeviceId()` (this browser's stored ID, to show before streaming), `isEncodingSupported()`, `isWebTransportSupported()`, `computeFootprint()`, `encodeSt0601()`, `TsMuxer`, `readPhotoInfo()`, `photoFov()`, `videoFov()`, `cameraPose()`, `rotationMatrix()`.
+Also exported: `getDeviceId()` (this browser's stored ID, to show before streaming), `isEncodingSupported()`, `isAudioEncodingSupported()`, `isWebTransportSupported()`, `computeFootprint()`, `encodeSt0601()`, `TsMuxer`, `readPhotoInfo()`, `photoFov()`, `videoFov()`, `cameraPose()`, `rotationMatrix()`.
 
 Options (`StreamerOptions`):
 
@@ -164,6 +167,7 @@ Options (`StreamerOptions`):
 | `width`, `height` | 1280, 720 | Requested capture size (ideal, not exact) |
 | `fps` | 30 | Camera rate request and encoded frame-rate limit (`setFrameRate()` to change live) |
 | `bitrate` | ~0.1 bit/pixel·frame | H.264 bitrate, bits/s (`setBitrate()` to change live) |
+| `audio` | `true` | Microphone audio: `true`, `false` (video only, no microphone prompt), or `{ bitrate, channels, sampleRate, microphoneId, constraints }`. Bitrate defaults to 64 kbps (AAC) / 48 kbps (Opus), channels to 1; `constraints` are extra `MediaTrackConstraints` such as `echoCancellation`. See [Audio](#audio) |
 | `keyframeIntervalMs` | 1000 | IDR interval |
 | `maxQueueMs` | 500 | Latency bound: frames are skipped while more than this much video is waiting to be sent |
 | `klvIntervalMs` | 1000 | KLV insertion interval |
@@ -176,7 +180,8 @@ Options (`StreamerOptions`):
 
 ## Stream format
 
-* **PIDs:** PAT 0x0000, PMT 0x1000, video 0x0100 (stream_type 0x1B, H.264 Annex-B with AUDs, SPS/PPS before every IDR, also the PCR PID), KLV 0x0101.
+* **PIDs:** PAT 0x0000, PMT 0x1000, video 0x0100 (stream_type 0x1B, H.264 Annex-B with AUDs, SPS/PPS before every IDR, also the PCR PID), KLV 0x0101, audio 0x0102 (when enabled).
+* **Audio:** AAC-LC in ADTS (stream_type 0x0F), or Opus (stream_type 0x06 with registration descriptor `Opus` and the DVB extension descriptor carrying the channel count, each packet behind an `opus_control_header`). PES stream_id 0xC0, about 100 ms of audio per PES, PTS on the same clock as video.
 * **KLV carriage:** asynchronous metadata per MISB ST 1402: stream_type 0x06, PES stream_id 0xBD, registration descriptor `KLVA`, with PTS on the same clock as video.
 * H.264 profile: High, then Main, then Constrained Baseline, whichever the device's encoder accepts first. Encoding is in realtime mode with no B-frames; if an encoder reorders frames anyway, the library switches to Constrained Baseline.
 * PAT/PMT are sent with every keyframe and at least every 500 ms (the ETSI TR 101 290 limit). Keyframes come every second, and on every relay (re)connection, so receivers can join at any time.
@@ -221,6 +226,19 @@ The 35 mm equivalent is defined on the diagonal. The diagonal is split by the ph
 Headings are magnetic. Set `declination` for true north.
 
 **Ground footprint.** Rays through the image centre, corners and edges are projected onto flat ground `heightAboveGround` below the camera (default 1.5 m, a hand-held phone). GPS altitude is too inaccurate (±10–30 m) to use for this. Rays at or above the horizon, or hitting the ground beyond `maxRange` (default 2 km), are cut off at that horizontal distance. Each point is flagged `capped`, and the frame centre and slant range are then distances to that cut-off, not to the ground. The footprint is computed only when there is a position and a north-referenced heading. `snapshot().footprint` also gives a sampled outline for drawing; the demo map shows it, with a dashed border when part of the view is cut off. Terrain (hills, buildings) is not modelled.
+
+## Audio
+
+Audio is on by default. The stream carries **AAC-LC** where the browser can encode it, which is what STANAG 4609 tools and most receivers expect, and **Opus** otherwise. The PMT says which. ffmpeg, ffplay and VLC play both; some older or hardware receivers only take AAC.
+
+| | Chrome / Edge (Windows, macOS, Android) | Chromium (Linux) | Safari (with AudioEncoder) | Firefox 130+ |
+|---|---|---|---|---|
+| Codec | AAC | Opus | AAC | Opus |
+| Sample source | MediaStreamTrackProcessor | MediaStreamTrackProcessor | AudioWorklet | AudioWorklet |
+
+Audio never stops the stream. If the browser has no WebCodecs `AudioEncoder` (e.g. older iOS Safari), the microphone is refused or missing, or neither codec can be configured, a `warning` event says why and the stream carries video only. The same happens if audio fails mid-stream. With `audio: false` the microphone is never requested. Samples are timestamped by sample count on the stream clock, so audio stays continuous and in sync with video. Audio packets start with the first video frame, so a receiver always sees PAT/PMT and a keyframe first. The preview `<video>` stays muted, so there is no feedback.
+
+Integrations upgrading from 0.2 now get a microphone permission prompt unless they set `audio: false`.
 
 ## Browser support
 
@@ -301,7 +319,7 @@ curl -s -X PUT localhost:8090/streams/phone-chris -H 'content-type: application/
 ## Verifying a stream
 
 ```sh
-ffprobe udp://0.0.0.0:5000                       # shows h264 + "Data: klv (KLVA / 0x41564C4B)"
+ffprobe udp://0.0.0.0:5000                       # shows h264, aac or opus, and "Data: klv (KLVA / 0x41564C4B)"
 ```
 
 To inspect KLV values, use a STANAG 4609 tool such as QGIS FMV, the Python `klvdata` package, or `@vidterra/misb.js`.
@@ -310,7 +328,6 @@ FFmpeg 6.1.x has a bug: when extracting KLV it strips 5 bytes from **asynchronou
 
 ## Known limitations
 
-* Video only (no audio).
 * One stream per phone in practice: phones usually let only one page use a camera at a time.
 * Over a WebSocket (TCP), network stalls cause latency rather than loss; frames are skipped before encoding while more than `maxQueueMs` (default 500 ms) of video at the configured bitrate is waiting to be sent, so latency stays bounded.
 * Compass accuracy on phones is typically ±5–15° and is sensitive to nearby metal and magnets.

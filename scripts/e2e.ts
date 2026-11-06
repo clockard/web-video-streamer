@@ -1,5 +1,5 @@
 /**
- * End-to-end check: headless Chromium with a fake camera runs the demo page,
+ * End-to-end check: headless Chromium with a fake camera and microphone runs the demo page,
  * which streams through the Vite /relay proxy to the relay, which sends UDP to
  * a local socket. The captured transport stream is checked with ffprobe and
  * its KLV packets are parsed. The device's UDP output is set through the
@@ -9,12 +9,13 @@
  *   npm run e2e
  *
  * Environment: CHROME_PATH (browser executable), STREAM_SECONDS (default 6),
- * FALLBACK=1 (hide MediaStreamTrackProcessor to test the Safari/Firefox frame path),
+ * FALLBACK=1 (hide MediaStreamTrackProcessor to test the Safari/Firefox video and audio paths),
+ * AUDIO=0 (untick the demo's audio option; the stream must have no audio),
  * SCREENSHOT=path.png (save a screenshot of the demo page before stopping),
  * TRANSPORT=auto|webtransport|websocket (default auto), WT_MODE=datagram|stream,
  * WT_BROKEN=1 (unreachable WebTransport URL, to test the fallback to WebSocket).
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createSocket } from 'node:dgram';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -32,6 +33,7 @@ const WT_MODE = process.env.WT_MODE || 'datagram';
 /** Point WebTransport at a closed port to check the auto fallback to WebSocket. */
 const WT_BROKEN = !!process.env.WT_BROKEN;
 const STREAM_SECONDS = Number(process.env.STREAM_SECONDS || 6);
+const AUDIO = process.env.AUDIO !== '0';
 const LOCATION = { latitude: 38.8895, longitude: -77.0353 };
 const LIVE_FPS = 10;
 const LIVE_BITRATE_KBPS = 1000;
@@ -119,7 +121,7 @@ async function main() {
   });
   const context = await browser.newContext({
     ignoreHTTPSErrors: true,
-    permissions: ['geolocation', 'camera'],
+    permissions: ['geolocation', 'camera', 'microphone'],
     geolocation: { ...LOCATION, accuracy: 5 },
   });
   const page = await context.newPage();
@@ -133,6 +135,7 @@ async function main() {
   await page.fill('#device-id', DEVICE_ID);
   await page.click('details summary'); // Options
   await page.fill('#device-name', 'E2E browser');
+  await page.setChecked('#audio', AUDIO);
   await page.selectOption('#transport', TRANSPORT);
   await page.selectOption('#wt-mode', WT_MODE);
   await page.fill('#wt-url', `https://127.0.0.1:${WT_BROKEN ? 9 : WT_PORT}/stream`);
@@ -167,7 +170,7 @@ async function main() {
   await page.waitForTimeout((STREAM_SECONDS * 1000) / 2);
 
   const panel = await page.evaluate(() =>
-    Object.fromEntries(['m-pos', 'm-pose', 'm-center', 'm-fov', 's-fps', 's-bitrate', 's-transport', 's-codec', 's-frames'].map((id) => [id, document.getElementById(id)!.textContent])),
+    Object.fromEntries(['m-pos', 'm-pose', 'm-center', 'm-fov', 's-fps', 's-bitrate', 's-transport', 's-codec', 's-audio', 's-frames'].map((id) => [id, document.getElementById(id)!.textContent])),
   );
   const log = await page.evaluate(() => [...document.querySelectorAll('#log li')].map((li) => li.textContent).reverse());
   const relayView = relay.registry.info(DEVICE_ID);
@@ -216,6 +219,18 @@ async function main() {
       `PAT ${(overhead.patPackets / seconds).toFixed(1)}/s`,
   );
   const decodeErrors = execFileSync('ffmpeg', ['-v', 'error', '-i', file, '-map', '0:v', '-f', 'null', '-'], { stdio: ['ignore', 'pipe', 'pipe'] }).toString();
+  const audioStream = probe.streams.find((s: { codec_type: string }) => s.codec_type === 'audio') as
+    | { codec_name: string; start_time: string; duration?: string }
+    | undefined;
+  const videoStream = probe.streams.find((s: { codec_name?: string }) => s.codec_name === 'h264') as { start_time: string } | undefined;
+  let audioErrors = '';
+  let audioSeconds = 0;
+  if (audioStream) {
+    const pcm = spawnSync('ffmpeg', ['-v', 'error', '-i', file, '-map', '0:a', '-ac', '1', '-ar', '8000', '-f', 's16le', '-'], { maxBuffer: 64e6 });
+    audioErrors = pcm.stderr.toString();
+    audioSeconds = pcm.stdout.length / 16000;
+    console.log(`  audio ${audioStream.codec_name}: ${audioSeconds.toFixed(2)} s decoded, starts ${(Number(audioStream.start_time) - Number(videoStream?.start_time)).toFixed(3)} s after video`);
+  }
 
   const klv = klvPayloads(ts).map((p) => {
     const values = misb.st0601.parse(p);
@@ -228,6 +243,20 @@ async function main() {
   if (!codecs.includes('h264')) failures.push('no h264 stream');
   if (!codecs.includes('klv')) failures.push('no klv stream');
   if (decodeErrors) failures.push(`decode errors: ${decodeErrors}`);
+  if (AUDIO) {
+    if (!audioStream) failures.push('no audio stream');
+    else {
+      if (!['aac', 'opus'].includes(audioStream.codec_name)) failures.push(`unexpected audio codec ${audioStream.codec_name}`);
+      if (audioErrors) failures.push(`audio decode errors: ${audioErrors}`);
+      // Audio starts with the first video frame and should then cover the whole stream.
+      if (audioSeconds < seconds - 1) failures.push(`only ${audioSeconds.toFixed(2)} s of audio in ${seconds.toFixed(2)} s of stream`);
+      if (Math.abs(Number(audioStream.start_time) - Number(videoStream?.start_time)) > 0.5) failures.push('audio and video start times differ by more than 0.5 s');
+    }
+    if (!/^(AAC|Opus)/.test(panel['s-audio'] ?? '')) failures.push(`audio panel shows ${panel['s-audio']}`);
+  } else {
+    if (audioStream) failures.push('audio stream present with audio off');
+    if (panel['s-audio'] !== 'off') failures.push(`audio panel shows ${panel['s-audio']} with audio off`);
+  }
   if (klv.length < STREAM_SECONDS - 1) failures.push(`expected ~${STREAM_SECONDS} KLV packets, got ${klv.length}`);
   const last = klv.at(-1) ?? {};
   if (Math.abs((last['Sensor Latitude'] as number) - LOCATION.latitude) > 1e-5) failures.push('latitude mismatch');
@@ -268,6 +297,7 @@ async function main() {
   console.log(`\nMoved stream: ${moved.datagrams.length} datagrams, ${movedVideo?.nb_read_frames ?? 0} decodable frames -> ${movedFile}`);
   if (!movedVideo || !(Number(movedVideo.nb_read_frames) > 0)) failures.push('second receiver got no decodable video after the move');
   if (!movedProbe.streams.some((s: { codec_name?: string }) => s.codec_name === 'klv')) failures.push('second receiver got no KLV stream');
+  if (AUDIO && !movedProbe.streams.some((s: { codec_type?: string }) => s.codec_type === 'audio')) failures.push('second receiver got no audio stream');
 
   if (failures.length) {
     console.error('\nFAILED:\n  ' + failures.join('\n  '));

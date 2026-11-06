@@ -81,6 +81,7 @@
             <label>Device name <input id="device-name" autocomplete="off" placeholder="shown in the relay list" /></label>
             <label>Relay admin token <input id="admin-token" type="password" autocomplete="off" placeholder="if the relay has ADMIN_TOKEN" /></label>
           </div>
+          <label class="check"><input id="audio" type="checkbox" checked /> Include microphone audio (AAC, or Opus where AAC is unavailable)</label>
         </details>
         <div class="actions">
           <button type="button" id="calibrate" class="secondary">Calibrate FOV (take photo)</button>
@@ -116,6 +117,8 @@
           <dd id="s-transport">—</dd>
           <dt>Codec</dt>
           <dd id="s-codec">—</dd>
+          <dt>Audio</dt>
+          <dd id="s-audio">—</dd>
           <dt>Frames encoded / dropped</dt>
           <dd id="s-frames">—</dd>
           <dt>Sent</dt>

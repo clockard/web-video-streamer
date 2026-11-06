@@ -1,6 +1,7 @@
 /**
- * Minimal MPEG-2 Transport Stream muxer for one H.264 video stream plus one
- * asynchronous KLV metadata stream (MISB ST 1402 / ST 0604 style carriage).
+ * Minimal MPEG-2 Transport Stream muxer for one H.264 video stream, an
+ * optional audio stream (AAC in ADTS, or Opus), and one asynchronous KLV
+ * metadata stream (MISB ST 1402 / ST 0604 style carriage).
  */
 import { crc32Mpeg } from './crc32';
 
@@ -11,11 +12,14 @@ export const PID = {
   PMT: 0x1000,
   VIDEO: 0x0100,
   KLV: 0x0101,
+  AUDIO: 0x0102,
 } as const;
 
 const STREAM_TYPE_H264 = 0x1b;
 const STREAM_TYPE_PRIVATE_PES = 0x06;
+const STREAM_TYPE_AAC_ADTS = 0x0f;
 const STREAM_ID_VIDEO = 0xe0;
+const STREAM_ID_AUDIO = 0xc0;
 const STREAM_ID_PRIVATE_1 = 0xbd;
 const PROGRAM_NUMBER = 1;
 
@@ -27,9 +31,18 @@ const PTS_OFFSET_90K = 18_000; // 200 ms
  */
 const PSI_INTERVAL_US = 500_000;
 
+export type AudioCodec = 'aac' | 'opus';
+
+export interface MuxerAudioConfig {
+  codec: AudioCodec;
+  channels: number;
+}
+
 export interface MuxerOptions {
   /** Called with one or more whole 188-byte TS packets. */
   onData: (packets: Uint8Array) => void;
+  /** Audio elementary stream to announce in the PMT; omit for video + KLV only. */
+  audio?: MuxerAudioConfig;
 }
 
 const NAL_AUD = 9;
@@ -87,6 +100,7 @@ function buildPesHeader(streamId: number, pts: number, payloadLength: number, bo
 
 export class TsMuxer {
   private readonly onData: (packets: Uint8Array) => void;
+  private readonly audio?: MuxerAudioConfig;
   private readonly cc = new Map<number, number>();
   private lastPsiUs = -Infinity;
   private sps?: Uint8Array;
@@ -94,6 +108,7 @@ export class TsMuxer {
 
   constructor(options: MuxerOptions) {
     this.onData = options.onData;
+    this.audio = options.audio;
   }
 
   /**
@@ -113,6 +128,22 @@ export class TsMuxer {
     const pts = this.to90k(timestampUs) + PTS_OFFSET_90K;
     const pes = this.concat([buildPesHeader(STREAM_ID_PRIVATE_1, pts, klv.length, true), klv]);
     this.packetize(PID.KLV, pes, {});
+  }
+
+  /**
+   * Write audio frames as one PES packet. Frames must already be framed for TS:
+   * ADTS-wrapped AAC, or Opus packets with their control header (see ts/audio.ts).
+   * @param timestampUs presentation time of the first frame on the shared stream clock
+   */
+  writeAudio(frames: Uint8Array[], timestampUs: number): void {
+    if (!this.audio) throw new Error('TsMuxer was created without audio');
+    if (!frames.length) return;
+    const payload = this.concat(frames);
+    const pts = this.to90k(timestampUs) + PTS_OFFSET_90K;
+    // PES_packet_length is 16 bits; very long audio bursts fall back to an unbounded PES.
+    const bounded = payload.length + 8 <= 0xffff;
+    const pes = this.concat([buildPesHeader(STREAM_ID_AUDIO, pts, payload.length, bounded), payload]);
+    this.packetize(PID.AUDIO, pes, {});
   }
 
   private to90k(us: number): number {
@@ -153,8 +184,20 @@ export class TsMuxer {
       STREAM_TYPE_H264, 0xe0 | (PID.VIDEO >> 8), PID.VIDEO & 0xff, 0xf0, 0x00,
       STREAM_TYPE_PRIVATE_PES, 0xe0 | (PID.KLV >> 8), PID.KLV & 0xff, 0xf0, klvRegistration.length,
       ...klvRegistration,
+      ...this.audioEsInfo(),
     ]);
     this.packetize(PID.PMT, this.withPointer(pmt), {});
+  }
+
+  /** PMT elementary-stream loop entry for the audio stream, if any. */
+  private audioEsInfo(): number[] {
+    if (!this.audio) return [];
+    const pid = [0xe0 | (PID.AUDIO >> 8), PID.AUDIO & 0xff];
+    if (this.audio.codec === 'aac') return [STREAM_TYPE_AAC_ADTS, ...pid, 0xf0, 0x00];
+    // Opus: registration descriptor "Opus" + DVB extension descriptor (tag 0x80)
+    // with channel_config_code (1 or 2 channels; 0x80 + n would signal more).
+    const descriptors = [0x05, 0x04, 0x4f, 0x70, 0x75, 0x73, 0x7f, 0x02, 0x80, Math.min(Math.max(this.audio.channels, 1), 2)];
+    return [STREAM_TYPE_PRIVATE_PES, ...pid, 0xf0, descriptors.length, ...descriptors];
   }
 
   private section(tableId: number, tableIdExtension: number, body: number[]): Uint8Array {

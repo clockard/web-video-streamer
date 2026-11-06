@@ -7,7 +7,14 @@ const input = (id: string) => $<HTMLInputElement>(id);
 const num = (id: string) => (input(id).value === '' ? undefined : Number(input(id).value));
 
 const STORAGE_KEY = 'web-video-streamer-demo';
-const fields = ['relay', 'device-id', 'device-name', 'admin-token', 'transport', 'wt-mode', 'wt-url', 'width', 'height', 'fps', 'bitrate', 'declination', 'mission', 'height-agl', 'max-range'];
+const fields = ['relay', 'device-id', 'device-name', 'admin-token', 'transport', 'wt-mode', 'wt-url', 'width', 'height', 'fps', 'bitrate', 'declination', 'mission', 'height-agl', 'max-range', 'audio'];
+
+/** A field's saved form: checkboxes as "on"/"off", everything else as its value. */
+const fieldValue = (f: string) => (input(f).type === 'checkbox' ? (input(f).checked ? 'on' : 'off') : input(f).value);
+function setField(f: string, value: string) {
+  if (input(f).type === 'checkbox') input(f).checked = value === 'on';
+  else input(f).value = value;
+}
 
 function loadSettings() {
   input('relay').value = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/relay`;
@@ -15,7 +22,7 @@ function loadSettings() {
   input('wt-url').value = `https://${location.hostname === 'localhost' ? '127.0.0.1' : location.hostname}:4433/stream`;
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') as Record<string, string>;
-    for (const f of fields) if (saved[f]) input(f).value = saved[f];
+    for (const f of fields) if (saved[f]) setField(f, saved[f]);
   } catch {
     // Storage unavailable (private mode); defaults are fine.
   }
@@ -57,7 +64,7 @@ input('bitrate').addEventListener('change', () => {
 
 function saveSettings() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(Object.fromEntries(fields.map((f) => [f, input(f).value]))));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(Object.fromEntries(fields.map((f) => [f, fieldValue(f)]))));
   } catch {
     // Ignore storage failures.
   }
@@ -137,6 +144,7 @@ $('config').addEventListener('submit', async (e) => {
     height: num('height'),
     fps: num('fps'),
     bitrate: bitrateSetting(),
+    audio: input('audio').checked,
     declination: num('declination'),
     footprint: footprintSettings(),
     missionId: input('mission').value || undefined,
@@ -193,6 +201,9 @@ $('config').addEventListener('submit', async (e) => {
       `${(s.bitrate / 1000).toFixed(0)}` + (s.targetBitrate ? ` / ${(s.targetBitrate / 1000).toFixed(0)}` : '') + ' kbps';
     $('s-transport').textContent = s.transport ?? '—';
     $('s-codec').textContent = s.codec ? `H.264 ${s.profile} (${s.codec})` : '—';
+    $('s-audio').textContent = s.audioCodec
+      ? `${s.audioCodec === 'aac' ? 'AAC' : 'Opus'}${s.audioBitrate ? ` ${(s.audioBitrate / 1000).toFixed(0)} kbps` : ''}, ${s.audioFramesEncoded} frames`
+      : 'off';
     $('s-frames').textContent = `${s.framesEncoded} / ${s.framesDropped}`;
     $('s-sent').textContent = `${(s.bytesSent / 1e6).toFixed(1)} MB`;
   });

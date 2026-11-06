@@ -1,12 +1,20 @@
 /**
- * web-video-streamer — stream a browser camera as MPEG-TS with MISB ST 0601
- * KLV metadata. Browsers cannot send UDP, so the transport stream is sent
+ * web-video-streamer — stream a browser camera (and microphone) as MPEG-TS
+ * with MISB ST 0601 KLV metadata. Browsers cannot send UDP, so the transport stream is sent
  * over WebTransport or a WebSocket to a relay (see web-video-streamer-relay).
  * The library identifies the device; the relay decides which UDP output each
  * device's stream goes to.
  */
 import { cameraLabel, openCamera, trackZoom, type CameraOptions } from './camera';
 import { FrameEncoder, isEncodingSupported } from './encoder';
+import {
+  audioConstraints,
+  AudioEncoderPipeline,
+  AudioPesBuffer,
+  isAudioEncodingSupported,
+  type AudioOptions,
+} from './audio';
+import { StreamClock } from './clock';
 import {
   fovFromPhotoInfo,
   readPhotoInfo,
@@ -48,6 +56,13 @@ export interface StreamerOptions extends CameraOptions {
   deviceId?: string;
   /** Human-readable label shown in the relay's stream list. */
   deviceName?: string;
+  /**
+   * Include microphone audio (default true): AAC where the browser can encode
+   * it, otherwise Opus. Pass options to tune it, or false for video only. If the
+   * microphone or audio encoding is unavailable, a warning is emitted and the
+   * stream carries video only.
+   */
+  audio?: boolean | AudioOptions;
   /** Video bitrate in bits per second (default scales with resolution). */
   bitrate?: number;
   keyframeIntervalMs?: number;
@@ -92,6 +107,11 @@ export interface StreamStats {
   framesEncoded: number;
   framesDropped: number;
   bytesSent: number;
+  /** Audio codec in the stream ("aac" or "opus"), or undefined without audio. */
+  audioCodec?: string;
+  /** Audio encoder bitrate (bits/s). */
+  audioBitrate?: number;
+  audioFramesEncoded: number;
 }
 
 export interface MetadataSnapshot {
@@ -124,6 +144,7 @@ export class Streamer {
   private readonly listeners = new Map<keyof StreamerEvents, Set<Listener<never>>>();
   private sensors?: SensorTracker;
   private encoder?: FrameEncoder;
+  private audio?: AudioEncoderPipeline;
   private transport?: Transport;
   private muxer?: TsMuxer;
   private timers: ReturnType<typeof setInterval>[] = [];
@@ -170,7 +191,8 @@ export class Streamer {
     try {
       if (!isEncodingSupported()) throw new Error('This browser does not support WebCodecs video encoding');
 
-      this.stream = await openCamera(this.options);
+      const audioOptions = this.audioOptions();
+      this.stream = await this.openMedia(audioOptions);
       const track = this.stream.getVideoTracks()[0];
       if (this.options.videoElement) {
         this.options.videoElement.srcObject = this.stream;
@@ -187,7 +209,10 @@ export class Streamer {
 
       await this.initFov(track);
 
-      this.muxer = new TsMuxer({ onData: (d) => this.transport?.send(d) });
+      const clock = new StreamClock();
+      // The codec must be known before the muxer is made: it goes in the PMT.
+      this.audio = await this.prepareAudio(audioOptions, clock);
+      this.muxer = new TsMuxer({ onData: (d) => this.transport?.send(d), audio: this.audio?.muxConfig });
       this.transport = await this.connectTransport();
 
       this.encoder = new FrameEncoder(
@@ -204,12 +229,14 @@ export class Streamer {
         },
         (err) => this.fail(err),
         () => this.transport?.bufferedAmount ?? 0,
+        clock,
       );
       this.encoder.onFrameSize = (width, height) => {
         this.frameSize = { width, height };
         this.updateFov(track);
       };
       await this.encoder.start(this.options.videoElement);
+      this.audio?.start();
 
       this.timers.push(setInterval(() => this.sendMetadata(), this.options.klvIntervalMs ?? 1000));
       this.timers.push(setInterval(this.statsTimer(), 1000));
@@ -222,12 +249,12 @@ export class Streamer {
 
   async stop(): Promise<void> {
     this.timers.splice(0).forEach(clearInterval);
-    await this.encoder?.stop();
+    await Promise.all([this.encoder?.stop(), this.audio?.stop()]);
     this.transport?.close();
     this.sensors?.stop();
     this.stream?.getTracks().forEach((t) => t.stop());
     if (this.options.videoElement) this.options.videoElement.srcObject = null;
-    this.encoder = this.transport = this.sensors = this.muxer = undefined;
+    this.encoder = this.audio = this.transport = this.sensors = this.muxer = undefined;
     this.stream = undefined;
     if (this.state !== 'error') this.setState('stopped');
   }
@@ -235,6 +262,61 @@ export class Streamer {
   /** Transport in use while streaming, e.g. "webtransport/datagram" or "websocket". */
   get transportKind(): string | undefined {
     return this.transport?.kind;
+  }
+
+  /** Audio settings, or undefined when audio is off or cannot work in this browser. */
+  private audioOptions(): AudioOptions | undefined {
+    const audio = this.options.audio ?? true;
+    if (audio === false) return undefined;
+    if (!isAudioEncodingSupported()) {
+      this.emit('warning', 'This browser does not support WebCodecs audio encoding; streaming without audio');
+      return undefined;
+    }
+    return audio === true ? {} : audio;
+  }
+
+  /** Open camera and microphone; if only the microphone fails, carry on with the camera alone. */
+  private async openMedia(audio: AudioOptions | undefined): Promise<MediaStream> {
+    if (!audio) return openCamera(this.options);
+    try {
+      return await openCamera(this.options, audioConstraints(audio));
+    } catch (err) {
+      const name = (err as DOMException).name;
+      if (!['NotAllowedError', 'NotFoundError', 'NotReadableError', 'OverconstrainedError', 'AbortError'].includes(name)) throw err;
+      const stream = await openCamera(this.options);
+      this.emit('warning', `Microphone unavailable (${(err as Error).message || name}); streaming without audio`);
+      return stream;
+    }
+  }
+
+  /** Set up audio encoding for the stream's microphone track, or warn and drop the track. */
+  private async prepareAudio(options: AudioOptions | undefined, clock: StreamClock): Promise<AudioEncoderPipeline | undefined> {
+    const track = this.stream?.getAudioTracks()[0];
+    if (!options || !track) return undefined;
+    // PES packets wait for the first video frame, which brings PAT/PMT and a keyframe.
+    const pes = new AudioPesBuffer((frames, timestampUs) => this.muxer?.writeAudio(frames, timestampUs));
+    const pipeline = new AudioEncoderPipeline(
+      track,
+      options,
+      clock,
+      (frame) => this.videoStarted && pes.push(frame),
+      (err) => {
+        // Losing audio is not worth losing the stream: keep sending video.
+        this.emit('warning', `Audio stopped: ${err.message}`);
+        if (this.audio === pipeline) this.audio = undefined;
+        void pipeline.stop();
+        track.stop();
+      },
+    );
+    try {
+      await pipeline.prepare();
+      return pipeline;
+    } catch (err) {
+      this.emit('warning', `${(err as Error).message}; streaming without audio`);
+      track.stop();
+      this.stream?.removeTrack(track);
+      return undefined;
+    }
   }
 
   /** Connect to the relay with the configured transport, falling back from WebTransport to WebSocket in 'auto'. */
@@ -431,6 +513,9 @@ export class Streamer {
         framesEncoded: frames,
         framesDropped: this.encoder.dropped,
         bytesSent: bytes,
+        audioCodec: this.audio?.codec,
+        audioBitrate: this.audio?.bitrate,
+        audioFramesEncoded: this.audio?.encoded ?? 0,
       });
       lastFrames = frames;
       lastBytes = bytes;
@@ -465,7 +550,8 @@ export { cameraPose, rotationMatrix } from './sensors';
 export { computeFootprint } from './footprint';
 export type { Footprint, FootprintOptions, GroundPoint } from './footprint';
 export { encodeSt0601, type St0601Metadata } from './klv/st0601';
-export { TsMuxer } from './ts/muxer';
+export { TsMuxer, type AudioCodec, type MuxerAudioConfig } from './ts/muxer';
 export { isEncodingSupported } from './encoder';
+export { isAudioEncodingSupported, type AudioOptions } from './audio';
 export { getDeviceId } from './device';
 export { isWebTransportSupported, type WebTransportMode } from './webtransport';

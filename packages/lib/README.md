@@ -1,6 +1,6 @@
 # web-video-streamer
 
-Stream a phone (or any browser) camera as **MPEG-TS** with **MISB ST 0601 KLV** metadata: location, camera pointing direction, field of view and ground footprint, sent once per second. Video is encoded in the browser with WebCodecs and sent over WebTransport (or a WebSocket fallback) to [`web-video-streamer-relay`](https://www.npmjs.com/package/web-video-streamer-relay), which forwards it as UDP to the output it has mapped to this device.
+Stream a phone (or any browser) camera and microphone as **MPEG-TS** with **MISB ST 0601 KLV** metadata: location, camera pointing direction, field of view and ground footprint, sent once per second. Video (H.264) and audio (AAC, or Opus where the browser cannot encode AAC; on by default, `audio: false` to turn off) are encoded in the browser with WebCodecs and sent over WebTransport (or a WebSocket fallback) to [`web-video-streamer-relay`](https://www.npmjs.com/package/web-video-streamer-relay), which forwards it as UDP to the output it has mapped to this device.
 
 ```sh
 npm install web-video-streamer
@@ -19,6 +19,6 @@ streamer.on('stats', console.log);
 button.onclick = () => streamer.start(); // from a user gesture
 ```
 
-Requires a secure (HTTPS) page. Full documentation (options, KLV tags, how FOV and footprint are derived, browser support): https://github.com/clockard/web-video-streamer#readme
+Requires a secure (HTTPS) page. Full documentation (options, audio, KLV tags, how FOV and footprint are derived, browser support): https://github.com/clockard/web-video-streamer#readme
 
 MIT License

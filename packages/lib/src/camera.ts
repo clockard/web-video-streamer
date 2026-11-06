@@ -8,12 +8,15 @@ export interface CameraOptions {
   cameraId?: string;
 }
 
-export async function openCamera(options: CameraOptions = {}): Promise<MediaStream> {
+/**
+ * Open the camera, and the microphone too when `audio` constraints are given.
+ */
+export async function openCamera(options: CameraOptions = {}, audio: MediaTrackConstraints | false = false): Promise<MediaStream> {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error('Camera access is unavailable (a secure https:// context is required)');
   }
   return navigator.mediaDevices.getUserMedia({
-    audio: false,
+    audio,
     video: {
       ...(options.cameraId ? { deviceId: { exact: options.cameraId } } : { facingMode: { ideal: options.facingMode ?? 'environment' } }),
       width: { ideal: options.width ?? 1280 },

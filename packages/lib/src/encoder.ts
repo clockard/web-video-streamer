@@ -3,10 +3,11 @@
  *
  * Frames come from MediaStreamTrackProcessor where available (Chromium), and
  * otherwise are grabbed from a <video> element with requestVideoFrameCallback
- * (Safari, Firefox). All frames are re-stamped on one clock (microseconds
- * since the encoder started) so the muxer can align video and KLV.
+ * (Safari, Firefox). All frames are re-stamped on the shared stream clock
+ * so the muxer can align video, audio and KLV.
  */
 
+import { StreamClock } from './clock';
 import { FramePacer } from './pacer';
 
 export interface EncoderOptions {
@@ -68,7 +69,6 @@ export class FrameEncoder {
   private lastOutputUs = -Infinity;
   private readonly pacer: FramePacer;
   private stopSource?: () => void;
-  private readonly startMs = performance.now();
 
   constructor(
     private readonly track: MediaStreamTrack,
@@ -77,13 +77,15 @@ export class FrameEncoder {
     private readonly onError: (err: Error) => void,
     /** Bytes waiting to be sent; used for backpressure. */
     private readonly queuedBytes: () => number = () => 0,
+    /** Shared stream clock that frames are stamped on. */
+    private readonly clock: StreamClock = new StreamClock(),
   ) {
     this.pacer = new FramePacer(this.fps);
   }
 
-  /** Microseconds since the encoder was created: the shared stream clock. */
+  /** Current time on the shared stream clock, in microseconds. */
   nowUs(): number {
-    return Math.round((performance.now() - this.startMs) * 1000);
+    return this.clock.nowUs();
   }
 
   async start(video?: HTMLVideoElement): Promise<void> {

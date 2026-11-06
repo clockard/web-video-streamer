@@ -43,10 +43,13 @@ jobs:
             transport: websocket
           - name: fallback-to-websocket
             wt_broken: '1'
-          # Hides MediaStreamTrackProcessor: the <video> frame path Safari and Firefox use.
+          # Hides MediaStreamTrackProcessor: the <video> frame and AudioWorklet paths Safari and Firefox use.
           - name: video-element-frames
             transport: webtransport
             fallback: '1'
+          # Audio option off: the stream must carry no audio.
+          - name: no-audio
+            audio: '0'
     name: e2e (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v4
@@ -68,7 +71,7 @@ jobs:
 
       # Headless Chromium with a fake camera streams the demo page through the
       # relay to a local UDP socket; the capture is checked with ffprobe and a
-      # KLV parser (video, ST 0601 values, footprint, live fps/bitrate changes,
+      # KLV parser (video, audio, ST 0601 values, footprint, live fps/bitrate changes,
       # and the transport actually used).
       - run: npm run e2e
         env:
@@ -76,6 +79,7 @@ jobs:
           WT_MODE: ${{ matrix.wt_mode }}
           WT_BROKEN: ${{ matrix.wt_broken }}
           FALLBACK: ${{ matrix.fallback }}
+          AUDIO: ${{ matrix.audio }}
           SCREENSHOT: e2e-artifacts/demo.png
 
       - if: failure()

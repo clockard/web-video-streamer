@@ -146,6 +146,19 @@ select {
   color: var(--text);
 }
 
+label.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--text);
+}
+
+input[type='checkbox'] {
+  width: auto;
+  accent-color: var(--accent);
+}
+
 input[type='range'] {
   padding: 0;
   border: 0;
