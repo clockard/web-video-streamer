@@ -1,6 +1,6 @@
 {
   "name": "web-video-streamer-relay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "WebTransport and WebSocket to UDP relay for web-video-streamer MPEG-TS streams",
   "license": "MIT",
   "author": "clockard",

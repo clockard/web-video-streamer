@@ -1,6 +1,6 @@
 {
   "name": "web-video-streamer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Stream a browser camera as MPEG-TS with MISB ST 0601 KLV metadata (location, pointing direction, field of view, ground footprint) via a WebTransport/WebSocket-to-UDP relay",
   "license": "MIT",
   "author": "clockard",
