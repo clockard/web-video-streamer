@@ -69,9 +69,10 @@ export class FrameEncoder {
   private lastOutputUs = -Infinity;
   private readonly pacer: FramePacer;
   private stopSource?: () => void;
+  private video?: HTMLVideoElement;
 
   constructor(
-    private readonly track: MediaStreamTrack,
+    private track: MediaStreamTrack,
     private readonly options: EncoderOptions,
     private readonly onFrame: (frame: EncodedFrame) => void,
     private readonly onError: (err: Error) => void,
@@ -91,7 +92,32 @@ export class FrameEncoder {
   async start(video?: HTMLVideoElement): Promise<void> {
     if (!isEncodingSupported()) throw new Error('WebCodecs VideoEncoder is not supported in this browser');
     this.running = true;
+    this.video = video;
     this.stopSource = hasTrackProcessor() ? this.readTrack() : this.readVideoElement(video);
+  }
+
+  /**
+   * Stop reading the current track and wait until frames already taken from it
+   * are encoded. Call before stopping the track: frames of a stopped camera
+   * track can be invalidated, which fails the encoder.
+   */
+  async detach(): Promise<void> {
+    this.stopSource?.();
+    this.stopSource = undefined;
+    for (let i = 0; i < 100 && this.busy; i++) await new Promise((r) => setTimeout(r, 5));
+    if (this.encoder?.state === 'configured') await this.encoder.flush().catch(() => {});
+  }
+
+  /**
+   * Encode frames from another track (e.g. after switching camera) without
+   * restarting the stream. The next frame is a keyframe, and the encoder is
+   * reconfigured if the new camera's frame size differs.
+   */
+  setTrack(track: MediaStreamTrack): void {
+    this.stopSource?.();
+    this.track = track;
+    this.forceKeyframe = true;
+    if (this.running) this.stopSource = hasTrackProcessor() ? this.readTrack() : this.readVideoElement(this.video);
   }
 
   requestKeyframe(): void {
@@ -231,15 +257,19 @@ export class FrameEncoder {
     const Processor = (globalThis as unknown as { MediaStreamTrackProcessor: new (o: { track: MediaStreamTrack }) => { readable: ReadableStream<VideoFrame> } })
       .MediaStreamTrackProcessor;
     const reader = new Processor({ track: this.track }).readable.getReader();
+    let active = true;
     (async () => {
-      while (this.running) {
+      while (this.running && active) {
         const { value, done } = await reader.read();
         if (done) break;
         await this.handleFrame(value);
         value.close();
       }
-    })().catch((err) => this.running && this.onError(err));
-    return () => void reader.cancel().catch(() => {});
+    })().catch((err) => this.running && active && this.onError(err));
+    return () => {
+      active = false;
+      void reader.cancel().catch(() => {});
+    };
   }
 
   private readVideoElement(video?: HTMLVideoElement): () => void {
@@ -251,14 +281,16 @@ export class FrameEncoder {
       void el.play();
     }
     let handle = 0;
+    let active = true;
     const tick = () => {
-      if (!this.running) return;
+      if (!this.running || !active) return;
       // handleFrame drops frames beyond the target rate (rAF may fire at 60+ Hz).
       if (el.readyState >= 2) void this.handleFrame(el);
       handle = 'requestVideoFrameCallback' in el ? el.requestVideoFrameCallback(tick) : requestAnimationFrame(tick);
     };
     tick();
     return () => {
+      active = false;
       if ('cancelVideoFrameCallback' in el) el.cancelVideoFrameCallback(handle);
       else cancelAnimationFrame(handle);
       if (!video) el.srcObject = null;

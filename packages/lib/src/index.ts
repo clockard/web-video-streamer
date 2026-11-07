@@ -5,7 +5,16 @@
  * The library identifies the device; the relay decides which UDP output each
  * device's stream goes to.
  */
-import { cameraLabel, openCamera, trackZoom, type CameraOptions } from './camera';
+import {
+  cameraLabel,
+  isMissingCameraError,
+  openCamera,
+  trackZoom,
+  videoConstraints,
+  type CameraInfo,
+  type CameraOptions,
+  type CameraSelection,
+} from './camera';
 import { FrameEncoder, isEncodingSupported } from './encoder';
 import {
   audioConstraints,
@@ -125,6 +134,8 @@ export interface MetadataSnapshot {
 
 interface StreamerEvents {
   state: StreamerState;
+  /** The camera in use: on start and after each switch (setCamera). */
+  camera: CameraInfo;
   fov: FovResult;
   metadata: MetadataSnapshot;
   stats: StreamStats;
@@ -150,6 +161,9 @@ export class Streamer {
   private timers: ReturnType<typeof setInterval>[] = [];
   private photoInfo?: PhotoInfo;
   private fovSource: FovSource = 'default';
+  /** Lens data per camera ID: each camera of a multi-camera phone has its own focal length. */
+  private readonly lensByCamera = new Map<string, { info: PhotoInfo; source: FovSource }>();
+  private switching?: Promise<void>;
   private frameSize = { width: 0, height: 0 };
   private videoStarted = false;
   private readonly devicePersistent: boolean;
@@ -207,7 +221,9 @@ export class Streamer {
       this.sensors = new SensorTracker({ declination: this.options.declination });
       this.sensors.start((err) => this.emit('warning', err.message));
 
-      await this.initFov(track);
+      this.lensByCamera.clear();
+      await this.initFov(track, true);
+      this.emitCamera(track);
 
       const clock = new StreamClock();
       // The codec must be known before the muxer is made: it goes in the PMT.
@@ -233,7 +249,8 @@ export class Streamer {
       );
       this.encoder.onFrameSize = (width, height) => {
         this.frameSize = { width, height };
-        this.updateFov(track);
+        const current = this.videoTrack;
+        if (current) this.updateFov(current);
       };
       await this.encoder.start(this.options.videoElement);
       this.audio?.start();
@@ -275,18 +292,133 @@ export class Streamer {
     return audio === true ? {} : audio;
   }
 
-  /** Open camera and microphone; if only the microphone fails, carry on with the camera alone. */
+  /** Open camera and microphone. A requested camera that doesn't exist falls back to the default one. */
   private async openMedia(audio: AudioOptions | undefined): Promise<MediaStream> {
-    if (!audio) return openCamera(this.options);
     try {
-      return await openCamera(this.options, audioConstraints(audio));
+      return await this.openCameraAndMicrophone(audio, this.options);
+    } catch (err) {
+      if (!this.options.cameraId || !isMissingCameraError(err)) throw err;
+      this.emit('warning', `Camera ${this.options.cameraId} is not available; using the default camera`);
+      this.options.cameraId = undefined;
+      return this.openCameraAndMicrophone(audio, this.options);
+    }
+  }
+
+  /** If only the microphone fails, carry on with the camera alone. */
+  private async openCameraAndMicrophone(audio: AudioOptions | undefined, camera: CameraOptions): Promise<MediaStream> {
+    if (!audio) return openCamera(camera);
+    try {
+      return await openCamera(camera, audioConstraints(audio));
     } catch (err) {
       const name = (err as DOMException).name;
       if (!['NotAllowedError', 'NotFoundError', 'NotReadableError', 'OverconstrainedError', 'AbortError'].includes(name)) throw err;
-      const stream = await openCamera(this.options);
+      const stream = await openCamera(camera);
       this.emit('warning', `Microphone unavailable (${(err as Error).message || name}); streaming without audio`);
       return stream;
     }
+  }
+
+  private get videoTrack(): MediaStreamTrack | undefined {
+    return this.stream?.getVideoTracks()[0];
+  }
+
+  /** The camera in use while streaming. */
+  get camera(): CameraInfo | undefined {
+    const track = this.videoTrack;
+    return track && this.cameraInfo(track);
+  }
+
+  private cameraInfo(track: MediaStreamTrack): CameraInfo {
+    const settings = track.getSettings();
+    const facing = settings.facingMode === 'environment' || settings.facingMode === 'user' ? settings.facingMode : undefined;
+    return { id: settings.deviceId ?? '', label: track.label, facing };
+  }
+
+  private emitCamera(track: MediaStreamTrack) {
+    this.emit('camera', this.cameraInfo(track));
+  }
+
+  /**
+   * Choose the camera: by ID (see listCameras()) or facing direction; `{}` returns to the default
+   * (rear) camera. While streaming, switches immediately without interrupting the stream: the
+   * receiver sees a keyframe from the new camera, and the FOV is re-estimated for its lens.
+   * Otherwise it applies at the next start. Rejects (keeping the current camera) if the camera
+   * cannot be opened.
+   */
+  async setCamera(selection: CameraSelection): Promise<void> {
+    const previous = this.switching;
+    const run = (async () => {
+      await previous?.catch(() => {});
+      await this.switchCamera(selection);
+    })();
+    this.switching = run;
+    try {
+      await run;
+    } finally {
+      if (this.switching === run) this.switching = undefined;
+    }
+  }
+
+  private async switchCamera(selection: CameraSelection) {
+    const camera: CameraOptions = { ...this.options, cameraId: selection.cameraId, facingMode: selection.facingMode };
+    const stream = this.stream;
+    const old = this.videoTrack;
+    if (!stream || !old || !this.encoder || (this.state !== 'streaming' && this.state !== 'reconnecting')) {
+      this.options.cameraId = camera.cameraId;
+      this.options.facingMode = camera.facingMode;
+      return;
+    }
+    if (selection.cameraId && selection.cameraId === old.getSettings().deviceId) return;
+
+    const open = async () => (await navigator.mediaDevices.getUserMedia({ video: videoConstraints(camera) })).getVideoTracks()[0];
+    let track: MediaStreamTrack;
+    try {
+      track = await open();
+    } catch (err) {
+      // Many phones can only open one camera at a time: release the current one and try again.
+      if ((err as DOMException).name !== 'NotReadableError' && (err as DOMException).name !== 'AbortError') throw err;
+      await this.encoder.detach();
+      old.stop();
+      try {
+        track = await open();
+      } catch (retryErr) {
+        // Get the previous camera back so the stream carries on.
+        try {
+          const restored = (await navigator.mediaDevices.getUserMedia({ video: videoConstraints({ ...this.options, cameraId: old.getSettings().deviceId }) })).getVideoTracks()[0];
+          await this.useTrack(stream, old, restored);
+        } catch {
+          this.fail(new Error(`Camera switch failed and the previous camera could not be reopened: ${(retryErr as Error).message}`));
+        }
+        throw retryErr;
+      }
+    }
+    // The stream may have stopped while the camera was opening.
+    if (this.stream !== stream || !this.encoder) {
+      track.stop();
+      return;
+    }
+    this.options.cameraId = camera.cameraId;
+    this.options.facingMode = camera.facingMode;
+    await this.useTrack(stream, old, track);
+
+    const settings = track.getSettings();
+    this.frameSize = { width: settings.width ?? this.frameSize.width, height: settings.height ?? this.frameSize.height };
+    await this.initFov(track, false);
+    this.emitCamera(track);
+  }
+
+  /** Put a new video track in place of the old one: preview, encoder and stream. */
+  private async useTrack(stream: MediaStream, old: MediaStreamTrack, track: MediaStreamTrack) {
+    await this.encoder?.detach();
+    stream.removeTrack(old);
+    old.stop();
+    stream.addTrack(track);
+    const video = this.options.videoElement;
+    if (video) {
+      video.srcObject = stream;
+      void video.play().catch(() => {});
+    }
+    this.encoder?.setTrack(track);
   }
 
   /** Set up audio encoding for the stream's microphone track, or warn and drop the track. */
@@ -410,12 +542,26 @@ export class Streamer {
     return { timestamp: new Date(), position, pose, fov: this.fov, footprint };
   }
 
-  private async initFov(track: MediaStreamTrack) {
+  /**
+   * Find the lens data for this camera and compute the FOV. The calibration photo (taken with
+   * the native camera app's rear camera) is only used for the camera the stream starts with,
+   * unless that is a front camera.
+   */
+  private async initFov(track: MediaStreamTrack, starting: boolean) {
     const settings = track.getSettings();
-    this.frameSize = { width: settings.width ?? 1280, height: settings.height ?? 720 };
+    if (starting) this.frameSize = { width: settings.width ?? 1280, height: settings.height ?? 720 };
+    const cameraId = settings.deviceId ?? '';
+    const known = this.lensByCamera.get(cameraId);
+    if (known) {
+      this.photoInfo = known.info;
+      this.fovSource = known.source;
+      this.updateFov(track);
+      return;
+    }
 
+    this.photoInfo = undefined;
     let source: FovSource = 'default';
-    if (this.options.calibrationPhoto) {
+    if (starting && this.options.calibrationPhoto && settings.facingMode !== 'user') {
       this.photoInfo = await readPhotoInfo(this.options.calibrationPhoto).catch(() => ({}));
       source = 'photo-exif';
     }
@@ -429,6 +575,7 @@ export class Streamer {
     }
     this.photoInfo ??= {};
     this.fovSource = this.photoInfo.focalLength35mm ? source : 'default';
+    this.lensByCamera.set(cameraId, { info: this.photoInfo, source: this.fovSource });
     this.updateFov(track);
     if (this.fov?.source === 'default') {
       this.emit('warning', 'No lens EXIF data found; using a default field of view. Calibrate with a native camera photo for accuracy.');
@@ -556,4 +703,5 @@ export { TsMuxer, type AudioCodec, type MuxerAudioConfig } from './ts/muxer';
 export { isEncodingSupported } from './encoder';
 export { isAudioEncodingSupported, type AudioOptions } from './audio';
 export { getDeviceId } from './device';
+export { listCameras, type CameraInfo, type CameraOptions, type CameraSelection } from './camera';
 export { isWebTransportSupported, type WebTransportMode } from './webtransport';

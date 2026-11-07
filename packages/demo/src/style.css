@@ -35,6 +35,11 @@
   box-sizing: border-box;
 }
 
+/* Elements with their own display (grid, flex) would otherwise ignore the hidden attribute. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: var(--bg);
@@ -401,11 +406,6 @@ button.small {
 .viewer {
   display: grid;
   gap: 8px;
-}
-
-/* display: grid above would otherwise override the hidden attribute. */
-.viewer[hidden] {
-  display: none;
 }
 
 .viewer .preview {

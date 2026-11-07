@@ -71,7 +71,7 @@ Firewall: the phone must reach TCP 5173 (the page; the WebSocket, `/relay/cert-h
 
 The demo page has:
 * **Connection:** relay URL, device ID, transport (Auto / WebTransport only / WebSocket only), WebTransport mode (datagrams / reliable stream) and WebTransport URL (default `https://<page host>:4433/stream`). The relay certificate hash is fetched at page load.
-* **Live controls:** frame-rate and bitrate sliders, plus camera height above ground and max range for the footprint. All apply while streaming.
+* **Live controls:** camera picker (shown when the device has more than one camera, once camera permission is granted; switches live and is remembered), frame-rate and bitrate sliders, plus camera height above ground and max range for the footprint. All apply while streaming.
 * **Map (OpenStreetMap):** camera position, GPS accuracy circle, and the ground footprint, with a dot where the optical axis meets the ground. The outline is dashed when part of the view is cut off at the max range. It follows the camera until you pan; ◎ re-centres it.
 * **Relay streams:** every device the relay knows, live ones first, with source IP, transport, bitrate, viewer count, and an editable UDP output (**Save** moves a live stream immediately). **Watch** on a live device plays it on the page (see below). Offline devices can be forgotten, which frees their port. Polled every 2 s. If the relay has `ADMIN_TOKEN`, enter it under Options.
 * **Watching:** video and audio from the watched device (decoded in the page, see [Watching streams](#watching-streams)), with mute, frame rate, bitrate, codec, frames decoded/dropped and the camera's KLV position. Its camera and footprint appear on the map in orange. This works on a page that isn't streaming itself, e.g. a laptop watching a phone.
@@ -85,7 +85,7 @@ While streaming, the page holds a screen wake lock so the phone doesn't sleep (i
 `npm run e2e` runs the whole chain: headless Chromium with a fake camera and microphone, the demo page, the relay, and local UDP sockets. It routes the device to the first socket through `PUT /streams`, changes frame rate and bitrate mid-stream, then moves the stream to a second socket from the demo's **Relay streams** panel. It checks:
 * ffprobe finds H.264 + KLV + audio (Opus in Linux Chromium, which cannot encode AAC) in the first capture, the video and audio decode with no errors, and the audio covers the stream and starts with the video;
 * the KLV packets parse with valid checksums, and the position, heading, elevation, footprint and transport are correct;
-* the live changes took effect, and the relay reports the device's name, source IP and transport;
+* the live changes took effect (including a switch to another of Chromium's fake cameras mid-stream, which must leave the stream decodable), and the relay reports the device's name, source IP and transport;
 * a second page watching the device through the relay plays it, decoding video, audio and the KLV position, and the relay counts it as a viewer;
 * after the move, the first socket stops receiving and the second gets decodable video, audio and KLV.
 
@@ -178,7 +178,7 @@ Options (`StreamerOptions`):
 | `declination` | 0 | Degrees added to magnetic compass headings to get true north |
 | `footprint` | `{ heightAboveGround: 1.5, maxRange: 2000 }` | Ground footprint settings (metres), or `false` to omit the footprint tags |
 | `missionId`, `platformDesignation` | —, `Mobile Browser` | ST 0601 tags 3 and 10 |
-| `facingMode` / `cameraId` | `environment` | Camera selection; `cameraId` is a `MediaDeviceInfo.deviceId` |
+| `facingMode` / `cameraId` | `environment` | Camera selection: the rear camera unless set. `cameraId` comes from `listCameras()` (a `MediaDeviceInfo.deviceId`) and overrides `facingMode`; if that camera no longer exists, a `warning` is emitted and the default camera is used. `setCamera()` switches while streaming (see [Cameras](#cameras)) |
 
 ## Stream format
 
@@ -241,6 +241,26 @@ Audio is on by default. The stream carries **AAC-LC** where the browser can enco
 Audio never stops the stream. If the browser has no WebCodecs `AudioEncoder` (e.g. older iOS Safari), the microphone is refused or missing, or neither codec can be configured, a `warning` event says why and the stream carries video only. The same happens if audio fails mid-stream. With `audio: false` the microphone is never requested. Samples are timestamped by sample count on the stream clock, so audio stays continuous and in sync with video. Audio packets start with the first video frame, so a receiver always sees PAT/PMT and a keyframe first. The preview `<video>` stays muted, so there is no feedback.
 
 Integrations upgrading from 0.2 now get a microphone permission prompt unless they set `audio: false`.
+
+## Cameras
+
+Phones often have several cameras (front, rear wide, ultra-wide, telephoto). By default the stream uses the rear camera, as the browser picks it for `facingMode: 'environment'`. To choose:
+
+```ts
+import { listCameras } from 'web-video-streamer';
+
+const cameras = await listCameras(); // [{ id, label: 'Back Ultra Wide Camera', facing: 'environment' }, ...]
+const streamer = createStreamer({ ...options, cameraId: cameras[1]?.id });
+streamer.on('camera', (c) => console.log('using', c.label));
+await streamer.setCamera({ cameraId: cameras[2].id }); // switch while streaming
+await streamer.setCamera({ facingMode: 'user' });     // front camera
+await streamer.setCamera({});                         // back to the default
+```
+
+* Browsers reveal camera IDs and labels only after camera permission is granted, so `listCameras()` may return an empty list (or unlabelled cameras) before the first stream. Call it again after the `camera` event or on `navigator.mediaDevices`' `devicechange` event. IDs are stable per site, so they can be saved.
+* Switching while streaming doesn't interrupt the stream: the encoder moves to the new camera, the next frame is a keyframe, and it reconfigures if the frame size changes. Phones that can only open one camera at a time are handled by releasing the current camera first; if the new one then fails to open, the previous one is reopened and `setCamera()` rejects.
+* The FOV is worked out separately for each camera (lenses differ), and remembered for the stream. The calibration photo comes from the native camera app's rear camera, so it is only used for the camera the stream starts with, and not if that is a front camera. Other cameras use ImageCapture EXIF where available, otherwise the default FOV.
+* A depth or infrared camera listed by the device can't be encoded as H.264; choosing one fails the stream with an encoding error.
 
 ## Browser support
 

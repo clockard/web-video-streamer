@@ -5,6 +5,9 @@
  * its KLV packets are parsed. The device's UDP output is set through the
  * relay's /streams API before starting, then changed mid-stream from the
  * demo's "Relay streams" panel and a second socket must receive the stream.
+ * Chromium gets three fake cameras; the stream switches to the third one
+ * mid-stream from the demo's camera picker and must stay decodable. (The
+ * second fake camera delivers Y16 depth frames, which H.264 cannot encode.)
  * A second page watches the stream through the relay (/watch) and must decode
  * video and KLV metadata.
  *
@@ -119,7 +122,7 @@ async function main() {
   // 3. Browser with fake camera, geolocation and orientation
   const browser = await chromium.launch({
     executablePath: process.env.CHROME_PATH || undefined,
-    args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
+    args: ['--use-fake-device-for-media-stream=device-count=3', '--use-fake-ui-for-media-stream'],
   });
   const context = await browser.newContext({
     ignoreHTTPSErrors: true,
@@ -169,6 +172,12 @@ async function main() {
     );
   await setSlider('fps', LIVE_FPS);
   await setSlider('bitrate', LIVE_BITRATE_KBPS);
+
+  // Switch to the second camera mid-stream from the picker (shown only with 2+ cameras).
+  await page.waitForSelector('#camera-row:not([hidden])', { timeout: 5000 });
+  const cameraOptions = await page.$$eval('#camera option', (os) => os.map((o) => ({ value: (o as HTMLOptionElement).value, label: o.textContent })));
+  const secondCamera = cameraOptions.filter((o) => o.value)[2]; // fake_device_2 (fake_device_1 is Y16)
+  await page.selectOption('#camera', secondCamera.value);
   await page.waitForTimeout((STREAM_SECONDS * 1000) / 2);
 
   const panel = await page.evaluate(() =>
@@ -183,7 +192,10 @@ async function main() {
   viewerPage.on('pageerror', (e) => console.log(`[viewer error] ${e.message}`));
   await viewerPage.goto(pageUrl);
   const watchButton = viewerPage.locator(`li[data-device="${DEVICE_ID}"] button`, { hasText: 'Watch' });
-  await watchButton.waitFor({ timeout: 5000 });
+  await watchButton.waitFor({ timeout: 5000 }).catch((err) => {
+    console.error('Demo log:\n ', log.join('\n  '));
+    throw err;
+  });
   await watchButton.click();
   const watched = await viewerPage
     .waitForSelector('#viewer-state[data-state="playing"]', { timeout: 10_000 })
@@ -304,6 +316,11 @@ async function main() {
   if (relayView?.name !== 'E2E browser' || relayView.peer !== '127.0.0.1' || relayView.transport !== expectedTransport) {
     failures.push(`relay stream info wrong: ${JSON.stringify(relayView)}`);
   }
+
+  // The camera switch happened and the stream (checked for decode errors above) carried on.
+  const cameraLogs = log.filter((l) => l?.includes('Camera: '));
+  if (cameraLogs.length !== 2 || !cameraLogs[1]?.includes(secondCamera.label ?? '?')) failures.push(`camera switch not logged: ${JSON.stringify(cameraLogs)}`);
+  if (log.some((l) => l?.includes('Could not switch camera'))) failures.push('camera switch failed');
 
   // The viewer page decoded the stream relayed to it.
   if (!watched) failures.push(`viewer never started playing: ${JSON.stringify(viewerPanel)}`);

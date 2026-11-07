@@ -4,6 +4,7 @@ import {
   createStreamer,
   getDeviceId,
   isPlaybackSupported,
+  listCameras,
   readPhotoInfo,
   type StreamPlayer,
   type Streamer,
@@ -16,12 +17,20 @@ const input = (id: string) => $<HTMLInputElement>(id);
 const num = (id: string) => (input(id).value === '' ? undefined : Number(input(id).value));
 
 const STORAGE_KEY = 'web-video-streamer-demo';
-const fields = ['relay', 'device-id', 'device-name', 'admin-token', 'transport', 'wt-mode', 'wt-url', 'width', 'height', 'fps', 'bitrate', 'declination', 'mission', 'height-agl', 'max-range', 'audio'];
+const fields = ['relay', 'device-id', 'device-name', 'admin-token', 'transport', 'wt-mode', 'wt-url', 'width', 'height', 'fps', 'bitrate', 'declination', 'mission', 'height-agl', 'max-range', 'audio', 'camera'];
+
+/**
+ * The chosen camera's ID ('' = default). Kept apart from the <select>, whose options only
+ * exist once the browser reveals the cameras (after camera permission).
+ */
+let preferredCamera = '';
 
 /** A field's saved form: checkboxes as "on"/"off", everything else as its value. */
-const fieldValue = (f: string) => (input(f).type === 'checkbox' ? (input(f).checked ? 'on' : 'off') : input(f).value);
+const fieldValue = (f: string) =>
+  f === 'camera' ? preferredCamera : input(f).type === 'checkbox' ? (input(f).checked ? 'on' : 'off') : input(f).value;
 function setField(f: string, value: string) {
-  if (input(f).type === 'checkbox') input(f).checked = value === 'on';
+  if (f === 'camera') preferredCamera = value;
+  else if (input(f).type === 'checkbox') input(f).checked = value === 'on';
   else input(f).value = value;
 }
 
@@ -149,6 +158,7 @@ $('config').addEventListener('submit', async (e) => {
     serverCertificateHash: certificateHash,
     deviceId: input('device-id').value || undefined,
     deviceName: input('device-name').value || undefined,
+    cameraId: preferredCamera || undefined,
     width: num('width'),
     height: num('height'),
     fps: num('fps'),
@@ -186,6 +196,11 @@ $('config').addEventListener('submit', async (e) => {
           : 'needs position + compass heading';
       }, 250);
     }
+  });
+  streamer.on('camera', (camera) => {
+    log(`Camera: ${camera.label || 'unnamed'}`);
+    // Permission is granted now, so the browser reveals every camera's ID and label.
+    void refreshCameras();
   });
   streamer.on('warning', (msg) => log(msg, 'warning'));
   streamer.on('error', (err) => log(err.message, 'error'));
@@ -262,8 +277,42 @@ async function acquireWakeLock() {
 
 document.addEventListener('visibilitychange', () => void acquireWakeLock());
 
+// ---- Camera choice ----
+
+async function refreshCameras() {
+  const cameras = await listCameras().catch(() => []);
+  const select = $<HTMLSelectElement>('camera');
+  const facing = { environment: 'rear', user: 'front' } as const;
+  select.replaceChildren(
+    new Option('Default (rear camera)', ''),
+    ...cameras.map((c, i) => new Option(`${c.label || `Camera ${i + 1}`}${c.facing && !c.label ? ` (${facing[c.facing]})` : ''}`, c.id)),
+  );
+  // A remembered camera that is gone (or not revealed yet) shows as the default.
+  select.value = cameras.some((c) => c.id === preferredCamera) ? preferredCamera : '';
+  $('camera-row').hidden = cameras.length < 2;
+}
+
+$('camera').addEventListener('change', async () => {
+  const select = $<HTMLSelectElement>('camera');
+  preferredCamera = select.value;
+  saveSettings();
+  if (!streamer || (streamer.state !== 'streaming' && streamer.state !== 'reconnecting')) return;
+  select.disabled = true;
+  try {
+    await streamer.setCamera({ cameraId: preferredCamera || undefined });
+  } catch (err) {
+    log(`Could not switch camera: ${(err as Error).message}`, 'error');
+    void refreshCameras();
+  } finally {
+    select.disabled = false;
+  }
+});
+
+navigator.mediaDevices?.addEventListener?.('devicechange', () => void refreshCameras());
+
 if (!window.isSecureContext) log('This page is not served over HTTPS; camera and sensors will be unavailable.', 'error');
 loadSettings();
+void refreshCameras();
 
 const streams = new StreamsPanel(
   $<HTMLOListElement>('streams'),

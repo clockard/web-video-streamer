@@ -53,6 +53,12 @@
         </label>
         <fieldset class="live-controls">
           <legend>Video (adjustable while streaming)</legend>
+          <label id="camera-row" hidden>
+            Camera
+            <select id="camera">
+              <option value="">Default (rear camera)</option>
+            </select>
+          </label>
           <label>
             <span class="row">Frame rate <output id="fps-out" for="fps"></output></span>
             <input id="fps" type="range" min="1" max="60" step="1" value="30" />
