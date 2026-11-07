@@ -73,7 +73,8 @@ The demo page has:
 * **Connection:** relay URL, device ID, transport (Auto / WebTransport only / WebSocket only), WebTransport mode (datagrams / reliable stream) and WebTransport URL (default `https://<page host>:4433/stream`). The relay certificate hash is fetched at page load.
 * **Live controls:** frame-rate and bitrate sliders, plus camera height above ground and max range for the footprint. All apply while streaming.
 * **Map (OpenStreetMap):** camera position, GPS accuracy circle, and the ground footprint, with a dot where the optical axis meets the ground. The outline is dashed when part of the view is cut off at the max range. It follows the camera until you pan; ◎ re-centres it.
-* **Relay streams:** every device the relay knows, live ones first, with source IP, transport, bitrate, and an editable UDP output (**Save** moves a live stream immediately). Offline devices can be forgotten, which frees their port. Polled every 2 s. If the relay has `ADMIN_TOKEN`, enter it under Options.
+* **Relay streams:** every device the relay knows, live ones first, with source IP, transport, bitrate, viewer count, and an editable UDP output (**Save** moves a live stream immediately). **Watch** on a live device plays it on the page (see below). Offline devices can be forgotten, which frees their port. Polled every 2 s. If the relay has `ADMIN_TOKEN`, enter it under Options.
+* **Watching:** video and audio from the watched device (decoded in the page, see [Watching streams](#watching-streams)), with mute, frame rate, bitrate, codec, frames decoded/dropped and the camera's KLV position. Its camera and footprint appear on the map in orange. This works on a page that isn't streaming itself, e.g. a laptop watching a phone.
 * **Options:** capture size, declination, mission ID, device name (shown in the relay list), relay admin token, and an **Include microphone audio** checkbox (on by default).
 * **Panels:** position, altitude, azimuth/elevation/roll, frame centre distance and slant range, FOV and its source, camera, frame rate and bitrate (actual / target), transport, H.264 profile, audio codec and bitrate, frames encoded/dropped, bytes sent, and a log of events and warnings.
 
@@ -85,6 +86,7 @@ While streaming, the page holds a screen wake lock so the phone doesn't sleep (i
 * ffprobe finds H.264 + KLV + audio (Opus in Linux Chromium, which cannot encode AAC) in the first capture, the video and audio decode with no errors, and the audio covers the stream and starts with the video;
 * the KLV packets parse with valid checksums, and the position, heading, elevation, footprint and transport are correct;
 * the live changes took effect, and the relay reports the device's name, source IP and transport;
+* a second page watching the device through the relay plays it, decoding video, audio and the KLV position, and the relay counts it as a viewer;
 * after the move, the first socket stops receiving and the second gets decodable video, audio and KLV.
 
 | Variable | |
@@ -276,13 +278,13 @@ TLS_CERT=cert.pem TLS_KEY=key.pem npx web-video-streamer-relay
 
 | Variable | Default | |
 |---|---|---|
-| `PORT` | 8090 | WebSocket and HTTP (`/cert-hash`, `/streams`) port, TCP |
+| `PORT` | 8090 | WebSocket (streaming in, `/watch`) and HTTP (`/cert-hash`, `/streams`) port, TCP |
 | `WT_PORT` | 4433 | WebTransport port, **UDP** (`off` disables) |
 | `ALLOW` | `*` | Allowed UDP destinations (`host:port`, `host:*`, `*` = any address). Set `ADMIN_TOKEN` if others can reach the `/streams` API |
 | `AUTO_HOST` | `127.0.0.1` | Host of outputs auto-assigned to new devices |
 | `AUTO_PORTS` | `5000-5099` | Port range for auto-assigned outputs |
 | `MAPPINGS_FILE` | `./relay-mappings.json` | Where device → output mappings are kept across restarts (`off` = memory only) |
-| `ADMIN_TOKEN` | — | If set, the `/streams` API requires `Authorization: Bearer <token>` |
+| `ADMIN_TOKEN` | — | If set, the `/streams` API requires `Authorization: Bearer <token>`, and `/watch` requires `&token=<token>` |
 | `TLS_CERT` / `TLS_KEY` | — | PEM certificate and key |
 | `WT_HOSTNAMES` | localhost + this host's IPs | Names in the generated certificate |
 
@@ -300,7 +302,7 @@ HTTP API (on `PORT`, CORS enabled; with `ADMIN_TOKEN` every call needs `Authoriz
 
 | Request | Response |
 |---|---|
-| `GET /streams` | `{"streams": [...], "allow": [...]}`; each stream has `deviceId`, `name`, `target`, `assigned` (`auto`/`manual`), `connected`, `transport`, `peer` (source IP), `connectedAt`, `lastSeen`, `bitrate` (bits/s), `bytes` |
+| `GET /streams` | `{"streams": [...], "allow": [...]}`; each stream has `deviceId`, `name`, `target`, `assigned` (`auto`/`manual`), `connected`, `transport`, `peer` (source IP), `connectedAt`, `lastSeen`, `bitrate` (bits/s), `bytes`, `viewers` |
 | `GET /streams/<id>` | One stream, or 404 |
 | `PUT /streams/<id>` with `{"target": "udp://host:port"}` | The updated stream; 400 bad target, 403 not on `ALLOW`. Works for devices not seen yet (pre-assigning) |
 | `DELETE /streams/<id>` | 204; 404 unknown, 409 while streaming |
@@ -309,6 +311,29 @@ HTTP API (on `PORT`, CORS enabled; with `ADMIN_TOKEN` every call needs `Authoriz
 curl -s localhost:8090/streams
 curl -s -X PUT localhost:8090/streams/phone-chris -H 'content-type: application/json' -d '{"target":"udp://10.0.0.5:5002"}'
 ```
+
+### Watching streams
+
+Browsers (or anything that speaks WebSocket) can watch a device through the relay: connect to `ws(s)://<relay>:<PORT>/watch?device=<id>`, adding `&token=<ADMIN_TOKEN>` when one is set (browsers can't set headers on a WebSocket; `Authorization: Bearer` also works). The relay sends text frames `{"type":"status","connected":true|false}`, first on connect and then whenever the device starts or stops, and binary frames carrying the device's MPEG-TS exactly as sent to its UDP output. A viewer stays attached across the device's reconnects. Unknown devices are refused with close code **4004**, and a wrong token with **1008**. A viewer that can't keep up (more than 1 MB queued) loses data rather than slowing the relay; it resyncs at the next keyframe.
+
+The library plays these streams in the page:
+
+```ts
+import { createPlayer, isPlaybackSupported } from 'web-video-streamer';
+
+button.onclick = () => {
+  const player = createPlayer({
+    url: 'wss://relay.example.com:8090/watch?device=phone-chris',
+    canvas: document.querySelector('canvas')!,
+    audioContext: new AudioContext(), // created in the click, so it may play sound
+  });
+  player.on('state', console.log); // connecting | waiting (device offline) | playing | stopped | error
+  player.on('metadata', (klv) => console.log(klv.sensorLatitude, klv.sensorLongitude, klv.corners));
+  player.start();
+};
+```
+
+`TsDemuxer` and `decodeSt0601()` are exported for use on their own. Playback needs WebCodecs `VideoDecoder` (`isPlaybackSupported()`). Audio needs `AudioDecoder`; without it the player plays video only and warns. Playback favours latency: the newest decoded frame is drawn on each animation frame and audio plays as it arrives, so audio and video aren't synchronised, and a viewer starts at the next keyframe (≤ 1 s by default).
 
 **Certificates.** WebTransport always needs TLS. Without `TLS_CERT`/`TLS_KEY`, the relay generates an ECDSA certificate valid for 13 days at startup. Browsers accept it when the page passes its hash as `serverCertificateHash`; `GET /cert-hash` returns `{"sha256": "..."}`. These certificates may last at most 14 days, so **restart the relay at least every 13 days** (the startup log shows the expiry). For production, use a real certificate.
 

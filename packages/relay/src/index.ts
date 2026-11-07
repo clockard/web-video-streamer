@@ -11,6 +11,8 @@ export {
   type StreamMapping,
   type StreamRegistryOptions,
   type StreamSession,
+  type StreamViewer,
 } from './streams.js';
+export { createWatchServer, WATCH_PATH, UNKNOWN_DEVICE_CLOSE_CODE, VIEWER_MAX_BUFFERED, type WatchServerOptions } from './watch.js';
 export { createWebTransportRelay, WEBTRANSPORT_PATH, type WebTransportRelayOptions } from './webtransport.js';
 export { certificateHash, generateSelfSignedCertificate, SELF_SIGNED_VALIDITY_DAYS, type ServerCertificate } from './cert.js';

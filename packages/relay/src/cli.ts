@@ -7,7 +7,8 @@
  *   AUTO_HOST       host for outputs auto-assigned to new devices (default 127.0.0.1)
  *   AUTO_PORTS      port range for auto-assigned outputs (default 5000-5099)
  *   MAPPINGS_FILE   JSON file keeping device -> output mappings (default ./relay-mappings.json; "off" = memory only)
- *   ADMIN_TOKEN     if set, the /streams API requires "Authorization: Bearer <token>"
+ *   ADMIN_TOKEN     if set, the /streams API requires "Authorization: Bearer <token>" and
+ *                   watching a stream (/watch?device=<id>) requires &token=<token>
  *   TLS_CERT/TLS_KEY  certificate and key (PEM). Used for wss:// and WebTransport;
  *                     without them WebTransport uses a generated 13-day self-signed
  *                     certificate whose hash is served at GET /cert-hash.
@@ -38,6 +39,7 @@ const relay = await startRelay({
 });
 
 log(`websocket relay listening on ${relay.secure ? 'wss' : 'ws'}://0.0.0.0:${relay.port}, allowed outputs: ${allow.join(', ')}`);
+log(`viewers watch at ${relay.secure ? 'wss' : 'ws'}://0.0.0.0:${relay.port}/watch?device=<id>`);
 log(`stream API at http${relay.secure ? 's' : ''}://0.0.0.0:${relay.port}/streams${process.env.ADMIN_TOKEN ? ' (admin token required)' : ''}`);
 if (relay.webTransportPort) {
   const expiry = relay.secure ? '' : `; self-signed certificate valid until ${relay.certificate!.notAfter.toISOString()} (restart before then)`;

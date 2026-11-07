@@ -5,6 +5,8 @@
  * its KLV packets are parsed. The device's UDP output is set through the
  * relay's /streams API before starting, then changed mid-stream from the
  * demo's "Relay streams" panel and a second socket must receive the stream.
+ * A second page watches the stream through the relay (/watch) and must decode
+ * video and KLV metadata.
  *
  *   npm run e2e
  *
@@ -175,6 +177,25 @@ async function main() {
   const log = await page.evaluate(() => [...document.querySelectorAll('#log li')].map((li) => li.textContent).reverse());
   const relayView = relay.registry.info(DEVICE_ID);
 
+  // Watch the stream from a second page, as another user of the demo would.
+  const viewerPage = await context.newPage();
+  viewerPage.on('console', (m) => console.log(`[viewer] ${m.text()}`));
+  viewerPage.on('pageerror', (e) => console.log(`[viewer error] ${e.message}`));
+  await viewerPage.goto(pageUrl);
+  const watchButton = viewerPage.locator(`li[data-device="${DEVICE_ID}"] button`, { hasText: 'Watch' });
+  await watchButton.waitFor({ timeout: 5000 });
+  await watchButton.click();
+  const watched = await viewerPage
+    .waitForSelector('#viewer-state[data-state="playing"]', { timeout: 10_000 })
+    .then(() => true)
+    .catch(() => false);
+  await viewerPage.waitForTimeout(2000);
+  const viewerPanel = await viewerPage.evaluate(() =>
+    Object.fromEntries(['viewer-state', 'v-fps', 'v-codec', 'v-audio', 'v-frames', 'v-pos'].map((id) => [id, document.getElementById(id)!.textContent])),
+  );
+  const viewersSeen = relay.registry.info(DEVICE_ID)?.viewers;
+  await viewerPage.close();
+
   // Move the live stream to the second receiver from the demo's streams panel.
   const row = page.locator(`li[data-device="${DEVICE_ID}"]`);
   await row.locator('.stream-status', { hasText: 'live' }).waitFor({ timeout: 5000 });
@@ -199,6 +220,7 @@ async function main() {
   console.log('Demo log:\n ', log.join('\n  '));
   console.log('Relay view of the device:', relayView);
   console.log('Streams panel row:', streamsPanel);
+  console.log('Viewer panel:', viewerPanel);
 
   // 4. Check the captured stream
   const ts = Buffer.concat(datagrams);
@@ -282,6 +304,16 @@ async function main() {
   if (relayView?.name !== 'E2E browser' || relayView.peer !== '127.0.0.1' || relayView.transport !== expectedTransport) {
     failures.push(`relay stream info wrong: ${JSON.stringify(relayView)}`);
   }
+
+  // The viewer page decoded the stream relayed to it.
+  if (!watched) failures.push(`viewer never started playing: ${JSON.stringify(viewerPanel)}`);
+  if (viewersSeen !== 1) failures.push(`relay counted ${viewersSeen} viewers, expected 1`);
+  const [decoded] = (viewerPanel['v-frames'] ?? '').match(/\d+/g)?.map(Number) ?? [];
+  if (!(decoded > 10)) failures.push(`viewer decoded only ${viewerPanel['v-frames']} frames`);
+  if (!viewerPanel['v-codec']?.startsWith('avc1.')) failures.push(`viewer codec ${viewerPanel['v-codec']}`);
+  const [viewLat, viewLon] = (viewerPanel['v-pos'] ?? '').split(',').map(Number);
+  if (Math.abs(viewLat - LOCATION.latitude) > 1e-5 || Math.abs(viewLon - LOCATION.longitude) > 1e-5) failures.push(`viewer KLV position ${viewerPanel['v-pos']}`);
+  if (AUDIO && !/^(AAC|Opus), [1-9]/.test(viewerPanel['v-audio'] ?? '')) failures.push(`viewer audio ${viewerPanel['v-audio']}`);
 
   // The moved stream: the first receiver stops, the second gets a decodable stream with KLV.
   if (datagrams.length > datagramsBeforeMove + 2) failures.push(`first receiver kept receiving after the move (${datagrams.length - datagramsBeforeMove} datagrams)`);

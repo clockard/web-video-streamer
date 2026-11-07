@@ -11,6 +11,7 @@ interface StreamInfo {
   lastSeen?: string;
   bitrate: number;
   bytes: number;
+  viewers?: number;
 }
 
 interface Row {
@@ -20,6 +21,7 @@ interface Row {
   meta: HTMLElement;
   input: HTMLInputElement;
   forget: HTMLButtonElement;
+  watch: HTMLButtonElement;
   message: HTMLElement;
   /** The relay's value when the input was last synced; edits differ from it. */
   synced: string;
@@ -52,6 +54,8 @@ export class StreamsPanel {
     private readonly base: string,
     private readonly ownDeviceId: () => string,
     private readonly token: () => string,
+    /** Called when the Watch button of a live device is clicked (a user gesture). */
+    private readonly onWatch: (deviceId: string, name?: string) => void,
   ) {}
 
   start(intervalMs = 2000) {
@@ -97,7 +101,10 @@ export class StreamsPanel {
         s.peer ?? 'unknown IP',
         s.connected ? `${s.transport} · ${(s.bitrate / 1000).toFixed(0)} kbps` : `last seen ${ago(s.lastSeen)}`,
         s.assigned === 'auto' ? 'auto-assigned' : 'set manually',
+        ...(s.viewers ? [`${s.viewers} watching`] : []),
       ].join(' · ');
+      row.watch.hidden = !s.connected;
+      row.watch.dataset.name = s.name ?? '';
       // Leave the field alone while it is being edited.
       if (document.activeElement !== row.input && row.input.value === row.synced) row.input.value = s.target;
       row.synced = s.target;
@@ -133,7 +140,11 @@ export class StreamsPanel {
     const head = el('div', 'stream-head');
     const title = el('div', 'stream-title');
     const status = el('span', 'stream-status');
-    head.append(title, status);
+    const watch = el('button', 'small', 'Watch');
+    watch.type = 'button';
+    watch.hidden = true;
+    watch.addEventListener('click', () => this.onWatch(deviceId, watch.dataset.name || undefined));
+    head.append(title, status, watch);
     const meta = el('div', 'stream-meta');
 
     const form = el('form', 'stream-edit');
@@ -151,7 +162,7 @@ export class StreamsPanel {
     const message = el('p', 'hint stream-message');
 
     li.append(head, meta, form, message);
-    const row: Row = { el: li, title, status, meta, input, forget, message, synced: '' };
+    const row: Row = { el: li, title, status, meta, input, forget, watch, message, synced: '' };
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();

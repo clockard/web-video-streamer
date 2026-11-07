@@ -4,6 +4,7 @@ import { networkInterfaces } from 'node:os';
 import { certificateHash, generateSelfSignedCertificate, type ServerCertificate } from './cert.js';
 import { createRelay } from './relay.js';
 import { StreamError, StreamRegistry } from './streams.js';
+import { createWatchServer, WATCH_PATH } from './watch.js';
 import { createWebTransportRelay, WEBTRANSPORT_PATH } from './webtransport.js';
 
 export interface RelayServerOptions {
@@ -19,7 +20,7 @@ export interface RelayServerOptions {
   autoPorts?: [number, number];
   /** JSON file that keeps device → output mappings across restarts; undefined = memory only. */
   mappingsFile?: string;
-  /** When set, the /streams API requires "Authorization: Bearer <adminToken>". */
+  /** When set, the /streams API and watching streams (/watch) require this token. */
   adminToken?: string;
   /** PEM certificate and key for wss:// and WebTransport; otherwise WebTransport uses a generated self-signed one. */
   tls?: { cert: string; key: string };
@@ -47,7 +48,7 @@ function readBody(req: IncomingMessage): Promise<string> {
 }
 
 /**
- * Start the WebSocket relay, the HTTP API (GET /cert-hash, /streams) on one
+ * Start the WebSocket relay, the viewer WebSocket (/watch), the HTTP API (GET /cert-hash, /streams) on one
  * HTTP(S) port and, optionally, the WebTransport relay on a UDP port.
  */
 export async function startRelay(options: RelayServerOptions) {
@@ -141,7 +142,13 @@ export async function startRelay(options: RelayServerOptions) {
     send(res, 404);
   };
   const server = tls ? createHttpsServer({ cert: tls.cert, key: tls.key }, handler) : createHttpServer(handler);
-  const wss = createRelay({ server, registry, log });
+  // WebSocket upgrades: /watch is for viewers; every other path is a device streaming in.
+  const wss = createRelay({ noServer: true, registry, log });
+  const watch = createWatchServer({ registry, adminToken: options.adminToken, log });
+  server.on('upgrade', (req, socket, head) => {
+    const target = req.url?.split('?')[0] === WATCH_PATH ? watch : wss;
+    target.handleUpgrade(req, socket, head, (ws) => target.emit('connection', ws, req));
+  });
   await new Promise<void>((resolve) => server.listen(options.port, resolve));
   const port = (server.address() as { port: number }).port;
 
@@ -164,7 +171,9 @@ export async function startRelay(options: RelayServerOptions) {
     registry,
     close() {
       wt?.close();
+      for (const client of [...wss.clients, ...watch.clients]) client.terminate();
       wss.close();
+      watch.close();
       registry.close();
       server.close();
     },

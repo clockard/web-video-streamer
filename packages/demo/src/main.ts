@@ -1,4 +1,13 @@
-import { capturePhotoWithNativeCamera, createStreamer, getDeviceId, readPhotoInfo, type Streamer } from 'web-video-streamer';
+import {
+  capturePhotoWithNativeCamera,
+  createPlayer,
+  createStreamer,
+  getDeviceId,
+  isPlaybackSupported,
+  readPhotoInfo,
+  type StreamPlayer,
+  type Streamer,
+} from 'web-video-streamer';
 import { CameraMap, fmtDistance } from './map';
 import { StreamsPanel } from './streams';
 
@@ -262,6 +271,7 @@ const streams = new StreamsPanel(
   '/relay',
   () => input('device-id').value,
   () => input('admin-token').value,
+  watch,
 );
 streams.start();
 $('streams-refresh').addEventListener('click', () => void streams.refresh());
@@ -269,3 +279,71 @@ input('admin-token').addEventListener('change', () => {
   saveSettings();
   void streams.refresh();
 });
+
+// ---- Watching another device's stream ----
+
+let player: StreamPlayer | undefined;
+let audioContext: AudioContext | undefined;
+
+/** Watch a device's stream from the relay. Runs in the Watch button's click handler. */
+function watch(deviceId: string, name?: string) {
+  if (!isPlaybackSupported()) {
+    log('This browser cannot decode video (WebCodecs VideoDecoder is unavailable), so it cannot watch streams', 'error');
+    return;
+  }
+  stopWatching();
+  // Created (or resumed) inside the click so the browser lets it play sound.
+  audioContext ??= new AudioContext({ latencyHint: 'interactive' });
+  void audioContext.resume().catch(() => {});
+
+  const label = name ? `${name} (${deviceId})` : deviceId;
+  const params = new URLSearchParams({ device: deviceId });
+  if (input('admin-token').value) params.set('token', input('admin-token').value);
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/relay/watch?${params}`;
+
+  const p = createPlayer({
+    url,
+    canvas: $<HTMLCanvasElement>('viewer-canvas'),
+    audioContext,
+    muted: input('viewer-muted').checked,
+  });
+  player = p;
+  $('viewer').hidden = false;
+  $('viewer-title').textContent = `Watching ${label}`;
+  for (const id of ['v-fps', 'v-bitrate', 'v-codec', 'v-audio', 'v-frames', 'v-pos']) $(id).textContent = '—';
+
+  p.on('state', (state) => {
+    $('viewer-state').textContent = state === 'waiting' ? 'device offline' : state;
+    $('viewer-state').dataset.state = state;
+    log(`Watching ${deviceId}: ${state === 'waiting' ? 'device offline, waiting for it' : state}`);
+  });
+  p.on('warning', (msg) => log(`Watching ${deviceId}: ${msg}`, 'warning'));
+  p.on('error', (err) => log(`Watching ${deviceId}: ${err.message}`, 'error'));
+  p.on('stats', (s) => {
+    $('v-fps').textContent = `${s.fps} fps`;
+    $('v-bitrate').textContent = `${(s.bitrate / 1000).toFixed(0)} kbps`;
+    $('v-codec').textContent = s.codec ? `${s.codec}${s.width ? ` ${s.width}×${s.height}` : ''}` : '—';
+    $('v-audio').textContent = s.audioCodec ? `${s.audioCodec === 'aac' ? 'AAC' : 'Opus'}, ${s.audioFramesDecoded} frames` : 'none';
+    $('v-frames').textContent = `${s.framesDecoded} / ${s.framesDropped}`;
+  });
+  p.on('metadata', (m) => {
+    $('v-pos').textContent =
+      m.sensorLatitude !== undefined && m.sensorLongitude !== undefined
+        ? `${m.sensorLatitude.toFixed(6)}, ${m.sensorLongitude.toFixed(6)}`
+        : 'no position';
+    map.updateRemote(name || deviceId, m);
+  });
+  p.start();
+}
+
+function stopWatching() {
+  player?.stop();
+  player = undefined;
+  map.clearRemote();
+}
+
+$('viewer-stop').addEventListener('click', () => {
+  stopWatching();
+  $('viewer').hidden = true;
+});
+input('viewer-muted').addEventListener('change', () => player?.setMuted(input('viewer-muted').checked));

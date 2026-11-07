@@ -72,3 +72,66 @@ export function toOpusTs(packet: Uint8Array): Uint8Array {
   out.set(packet, header.length);
   return out;
 }
+
+export interface AdtsFrame {
+  config: AacConfig;
+  /** The raw AAC frame, without its ADTS header. */
+  raw: Uint8Array;
+}
+
+/** Split a buffer of back-to-back ADTS frames into raw AAC frames; stops at the first malformed header. */
+export function fromAdts(data: Uint8Array): AdtsFrame[] {
+  const frames: AdtsFrame[] = [];
+  let i = 0;
+  while (i + 7 <= data.length && data[i] === 0xff && (data[i + 1] & 0xf0) === 0xf0) {
+    const protectionAbsent = data[i + 1] & 0x01;
+    const headerLength = protectionAbsent ? 7 : 9;
+    const frameLength = ((data[i + 3] & 0x03) << 11) | (data[i + 4] << 3) | (data[i + 5] >> 5);
+    if (frameLength < headerLength || i + frameLength > data.length) break;
+    const config: AacConfig = {
+      objectType: (data[i + 2] >> 6) + 1,
+      sampleRateIndex: (data[i + 2] >> 2) & 0x0f,
+      channels: ((data[i + 2] & 0x01) << 2) | (data[i + 3] >> 6),
+    };
+    frames.push({ config, raw: data.subarray(i + headerLength, i + frameLength) });
+    i += frameLength;
+  }
+  return frames;
+}
+
+/** Sample rate for an ADTS / AudioSpecificConfig sampling_frequency_index. */
+export const sampleRateFromIndex = (index: number): number | undefined => SAMPLE_RATES[index];
+
+/** 2-byte AudioSpecificConfig (as WebCodecs AudioDecoder's description) for an AAC config. */
+export function audioSpecificConfig(config: AacConfig): Uint8Array {
+  return new Uint8Array([
+    (config.objectType << 3) | (config.sampleRateIndex >> 1),
+    ((config.sampleRateIndex & 0x01) << 7) | (config.channels << 3),
+  ]);
+}
+
+/**
+ * Split a PES payload of Opus packets, each with its control header, into the
+ * bare packets. Trim and extension fields (written by other muxers) are skipped.
+ */
+export function fromOpusTs(data: Uint8Array): Uint8Array[] {
+  const packets: Uint8Array[] = [];
+  let i = 0;
+  while (i + 2 < data.length && data[i] === 0x7f && (data[i + 1] & 0xe0) === 0xe0) {
+    const flags = data[i + 1];
+    i += 2;
+    let size = 0;
+    while (i < data.length) {
+      const b = data[i++];
+      size += b;
+      if (b !== 0xff) break;
+    }
+    if (flags & 0x10) i += 2; // start_trim
+    if (flags & 0x08) i += 2; // end_trim
+    if (flags & 0x04) i += 1 + (data[i] ?? 0); // control_extension
+    if (i + size > data.length) break;
+    packets.push(data.subarray(i, i + size));
+    i += size;
+  }
+  return packets;
+}

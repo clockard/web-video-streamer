@@ -186,3 +186,111 @@ export function encodeSt0601(m: St0601Metadata): Uint8Array {
   packet[packet.length - 1] = sum & 0xff;
   return packet;
 }
+
+function readUint(b: Uint8Array): number {
+  let v = 0;
+  for (const byte of b) v = v * 256 + byte;
+  return v;
+}
+
+function readInt(b: Uint8Array): number {
+  const v = readUint(b);
+  return v >= 2 ** (b.length * 8 - 1) ? v - 2 ** (b.length * 8) : v;
+}
+
+/** Inverse of mapUnsigned. */
+const unmapUnsigned = (b: Uint8Array, max: number) => (readUint(b) / (2 ** (b.length * 8) - 1)) * max;
+
+/** Inverse of mapSigned; the reserved minimum value ("error") decodes as undefined. */
+function unmapSigned(b: Uint8Array, max: number): number | undefined {
+  const v = readInt(b);
+  if (v === -(2 ** (b.length * 8 - 1))) return undefined;
+  return (v / (2 ** (b.length * 8 - 1) - 1)) * max;
+}
+
+const unaltitude = (b: Uint8Array) => (readUint(b) / 0xffff) * 19900 - 900;
+
+/** Read a BER length at `offset`: [length, bytes used], or undefined if truncated. */
+function readBerLength(b: Uint8Array, offset: number): [number, number] | undefined {
+  if (offset >= b.length) return undefined;
+  const first = b[offset];
+  if (first < 128) return [first, 1];
+  const n = first & 0x7f;
+  if (n === 0 || n > 4 || offset + 1 + n > b.length) return undefined;
+  return [readUint(b.subarray(offset + 1, offset + 1 + n)), 1 + n];
+}
+
+/**
+ * Decode an ST 0601 KLV packet (key, BER length, local set). Returns undefined
+ * if the key, length or checksum is wrong, or the timestamp is missing. Only
+ * the tags this library encodes (see `Tag`) are read; others are skipped.
+ */
+export function decodeSt0601(packet: Uint8Array): St0601Metadata | undefined {
+  if (packet.length < ST0601_KEY.length + 1) return undefined;
+  for (let i = 0; i < ST0601_KEY.length; i++) {
+    // Byte 5 (the registry designator) may vary between encoders; the others identify the local set.
+    if (i !== 5 && packet[i] !== ST0601_KEY[i]) return undefined;
+  }
+  const len = readBerLength(packet, ST0601_KEY.length);
+  if (!len) return undefined;
+  const start = ST0601_KEY.length + len[1];
+  const end = start + len[0];
+  if (end > packet.length) return undefined;
+
+  const m: Partial<St0601Metadata> = {};
+  const corners: Partial<{ latitude: number; longitude: number }>[] = [{}, {}, {}, {}];
+  const text = (b: Uint8Array) => new TextDecoder().decode(b);
+  let checked = false;
+
+  for (let i = start; i < end; ) {
+    const tag = packet[i];
+    const l = readBerLength(packet, i + 1);
+    if (!l) return undefined;
+    const vStart = i + 1 + l[1];
+    const v = packet.subarray(vStart, vStart + l[0]);
+    if (vStart + l[0] > end) return undefined;
+
+    switch (tag) {
+      case Tag.Checksum:
+        if (l[0] !== 2 || readUint(v) !== checksum(packet, vStart)) return undefined;
+        checked = true;
+        break;
+      case Tag.PrecisionTimeStamp:
+        if (v.length === 8) m.timestampUs = new DataView(v.buffer, v.byteOffset, 8).getBigUint64(0);
+        break;
+      case Tag.MissionId: m.missionId = text(v); break;
+      case Tag.PlatformHeading: m.platformHeading = unmapUnsigned(v, 360); break;
+      case Tag.PlatformPitch: m.platformPitch = unmapSigned(v, 20); break;
+      case Tag.PlatformRoll: m.platformRoll = unmapSigned(v, 50); break;
+      case Tag.PlatformDesignation: m.platformDesignation = text(v); break;
+      case Tag.ImageSourceSensor: m.imageSourceSensor = text(v); break;
+      case Tag.SensorLatitude: m.sensorLatitude = unmapSigned(v, 90); break;
+      case Tag.SensorLongitude: m.sensorLongitude = unmapSigned(v, 180); break;
+      case Tag.SensorTrueAltitude: m.sensorTrueAltitude = unaltitude(v); break;
+      case Tag.SensorHorizontalFov: m.horizontalFov = unmapUnsigned(v, 180); break;
+      case Tag.SensorVerticalFov: m.verticalFov = unmapUnsigned(v, 180); break;
+      case Tag.SensorRelativeAzimuth: m.sensorRelativeAzimuth = unmapUnsigned(v, 360); break;
+      case Tag.SensorRelativeElevation: m.sensorRelativeElevation = unmapSigned(v, 180); break;
+      case Tag.SensorRelativeRoll: m.sensorRelativeRoll = unmapUnsigned(v, 360); break;
+      case Tag.SlantRange: m.slantRange = unmapUnsigned(v, 5_000_000); break;
+      case Tag.FrameCenterLatitude: m.frameCenterLatitude = unmapSigned(v, 90); break;
+      case Tag.FrameCenterLongitude: m.frameCenterLongitude = unmapSigned(v, 180); break;
+      case Tag.SensorEllipsoidHeight: m.sensorEllipsoidHeight = unaltitude(v); break;
+      default:
+        if (tag >= Tag.CornerLatitudePoint1Full && tag < Tag.CornerLatitudePoint1Full + 8) {
+          const n = tag - Tag.CornerLatitudePoint1Full;
+          const corner = corners[n >> 1];
+          if (n % 2) corner.longitude = unmapSigned(v, 180);
+          else corner.latitude = unmapSigned(v, 90);
+        }
+    }
+    i = vStart + l[0];
+  }
+
+  if (!checked || m.timestampUs === undefined) return undefined;
+  if (corners.every((c) => c.latitude !== undefined && c.longitude !== undefined)) {
+    m.corners = corners as { latitude: number; longitude: number }[];
+  }
+  for (const k of Object.keys(m) as (keyof St0601Metadata)[]) if (m[k] === undefined) delete m[k];
+  return m as St0601Metadata;
+}

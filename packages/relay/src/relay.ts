@@ -16,6 +16,8 @@ export interface RelayOptions {
   port?: number;
   /** Attach to an existing HTTP(S) server instead of listening on a port. */
   server?: HttpServer | HttpsServer;
+  /** Neither listen nor attach; the caller passes upgrade requests to handleUpgrade(). */
+  noServer?: boolean;
   /** URL path clients connect to. */
   path?: string;
   /** Device → UDP output routing shared with the WebTransport relay. */
@@ -64,8 +66,9 @@ export class TsDatagramChunker {
 export function createRelay(options: RelayOptions): WebSocketServer {
   const log = options.log ?? (() => {});
   const wss = new WebSocketServer({
-    port: options.server ? undefined : options.port,
-    server: options.server,
+    port: options.server || options.noServer ? undefined : options.port,
+    server: options.noServer ? undefined : options.server,
+    noServer: options.noServer,
     path: options.path,
   });
 

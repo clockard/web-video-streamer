@@ -32,6 +32,8 @@ export interface StreamInfo extends StreamMapping {
   bitrate: number;
   /** Bytes forwarded by the live (or last) connection. */
   bytes: number;
+  /** Number of connected viewers (see StreamRegistry.subscribe). */
+  viewers: number;
 }
 
 export interface StreamRegistryOptions {
@@ -60,6 +62,16 @@ export interface StreamSession {
   /** Send one UDP datagram to the device's current output. */
   send(datagram: Uint8Array): void;
   detach(): void;
+}
+
+/** Receives a device's stream as it is relayed (e.g. a browser watching it). */
+export interface StreamViewer {
+  /** One datagram of whole TS packets, exactly as sent to the UDP output. */
+  data(datagram: Uint8Array): void;
+  /** The device started (true) or stopped (false) streaming. */
+  status(connected: boolean): void;
+  /** The device was forgotten; no more data will arrive. */
+  end(): void;
 }
 
 /** Error whose message is safe to show to clients; status is the HTTP status for the API. */
@@ -103,6 +115,7 @@ export class StreamRegistry {
   private readonly mappings = new Map<string, StreamMapping>();
   private readonly live = new Map<string, Live>();
   private readonly history = new Map<string, History>();
+  private readonly viewers = new Map<string, Set<StreamViewer>>();
   private readonly autoHost: string;
   private readonly autoPorts: [number, number];
   private readonly log: (msg: string) => void;
@@ -150,7 +163,7 @@ export class StreamRegistry {
     const previous = this.live.get(deviceId);
     if (previous) {
       this.log(`device ${deviceId}: replacing previous ${previous.transport} connection`);
-      this.end(deviceId, previous);
+      this.end(deviceId, previous, false);
       previous.close(REPLACED_CLOSE_CODE, 'replaced by a newer connection from this device');
     }
 
@@ -175,6 +188,8 @@ export class StreamRegistry {
           live.socket.send(datagram, live.target.port, live.target.host);
           history.bytes += datagram.byteLength;
           live.windowBytes += datagram.byteLength;
+          const viewers = registry.viewers.get(deviceId);
+          if (viewers) for (const v of viewers) v.data(datagram);
         },
         detach() {
           if (registry.live.get(deviceId) !== live) return;
@@ -184,6 +199,7 @@ export class StreamRegistry {
       },
     };
     this.live.set(deviceId, live);
+    this.notify(deviceId, true);
     this.log(`device ${deviceId}${name ? ` (${name})` : ''} from ${options.peer ?? 'unknown'} via ${options.transport} -> ${mapping.target}`);
     return live.session;
   }
@@ -222,8 +238,28 @@ export class StreamRegistry {
     if (this.live.has(deviceId)) throw new StreamError('device is streaming; stop it first', 409);
     if (!this.mappings.delete(deviceId)) throw new StreamError('unknown device', 404);
     this.history.delete(deviceId);
+    const viewers = this.viewers.get(deviceId);
+    this.viewers.delete(deviceId);
+    if (viewers) for (const v of viewers) v.end();
     this.save();
     this.log(`device ${deviceId} forgotten`);
+  }
+
+  /**
+   * Receive a known device's stream from now on, across reconnects; the viewer is told the
+   * current status straight away. Returns the unsubscribe function.
+   */
+  subscribe(deviceId: string, viewer: StreamViewer): () => void {
+    if (!this.mappings.has(deviceId)) throw new StreamError('unknown device', 404);
+    let set = this.viewers.get(deviceId);
+    if (!set) this.viewers.set(deviceId, (set = new Set()));
+    set.add(viewer);
+    viewer.status(this.live.has(deviceId));
+    return () => {
+      const current = this.viewers.get(deviceId);
+      if (!current?.delete(viewer)) return;
+      if (!current.size) this.viewers.delete(deviceId);
+    };
   }
 
   list(): StreamInfo[] {
@@ -245,19 +281,30 @@ export class StreamRegistry {
       lastSeen: live ? new Date().toISOString() : history?.lastSeen,
       bitrate: live?.bitrate ?? 0,
       bytes: history?.bytes ?? 0,
+      viewers: this.viewers.get(deviceId)?.size ?? 0,
     };
   }
 
   close(): void {
     clearInterval(this.timer);
     for (const [id, live] of this.live) this.end(id, live);
+    const viewers = [...this.viewers.values()].flatMap((set) => [...set]);
+    this.viewers.clear();
+    for (const v of viewers) v.end();
   }
 
-  private end(deviceId: string, live: Live) {
+  /** @param notify false when a new connection immediately takes over (viewers see no gap). */
+  private end(deviceId: string, live: Live, notify = true) {
     this.live.delete(deviceId);
     live.socket.close();
     const history = this.history.get(deviceId);
     if (history) history.lastSeen = new Date().toISOString();
+    if (notify) this.notify(deviceId, false);
+  }
+
+  private notify(deviceId: string, connected: boolean) {
+    const viewers = this.viewers.get(deviceId);
+    if (viewers) for (const v of viewers) v.status(connected);
   }
 
   private openSocket(deviceId: string, target: RelayTarget): Socket {

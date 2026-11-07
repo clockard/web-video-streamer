@@ -135,6 +135,34 @@
         <ol id="streams" class="stream-list"></ol>
       </section>
 
+      <section id="viewer" class="viewer" aria-labelledby="viewer-title" hidden>
+        <div class="streams-head">
+          <h2 id="viewer-title" class="viewer-title">Watching</h2>
+          <span id="viewer-state" class="badge" data-state="stopped">stopped</span>
+        </div>
+        <div class="preview">
+          <canvas id="viewer-canvas" aria-label="Video from the watched device"></canvas>
+        </div>
+        <div class="viewer-controls">
+          <label class="check"><input id="viewer-muted" type="checkbox" /> Mute</label>
+          <button type="button" id="viewer-stop" class="secondary small">Stop watching</button>
+        </div>
+        <dl class="panel">
+          <dt>Frame rate</dt>
+          <dd id="v-fps">—</dd>
+          <dt>Bitrate</dt>
+          <dd id="v-bitrate">—</dd>
+          <dt>Video</dt>
+          <dd id="v-codec">—</dd>
+          <dt>Audio</dt>
+          <dd id="v-audio">—</dd>
+          <dt>Frames decoded / dropped</dt>
+          <dd id="v-frames">—</dd>
+          <dt>Camera position</dt>
+          <dd id="v-pos">—</dd>
+        </dl>
+      </section>
+
       <ol id="log" class="log" aria-live="polite"></ol>
     </main>
     <script type="module" src="/src/main.ts"></script>
