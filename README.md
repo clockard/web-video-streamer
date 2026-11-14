@@ -15,6 +15,8 @@ Stream a phone (or any browser) camera and microphone to a remote server as **MP
 
 Browsers cannot open UDP sockets, so the library builds the complete transport stream in the page and sends it to a small relay, which forwards the bytes unchanged as UDP datagrams. The page reaches the relay over **WebTransport** (HTTP/3 over QUIC; preferred) or, as a fallback, over a **WebSocket**.
 
+Optionally the page can skip the relay and publish video and audio straight to [MediaMTX](https://github.com/bluenviron/mediamtx) over **Media over QUIC** (no KLV): see [Publishing to MediaMTX](#publishing-to-mediamtx-media-over-quic).
+
 The library doesn't know where the video ends up. It identifies itself with a **device ID**, and the relay decides which UDP output each device goes to: it auto-assigns a port the first time it sees a device, remembers the mapping, and lets an operator change it (including mid-stream) through its `/streams` API or the demo page. See [Routing](#routing-device--udp-output).
 
 > **0.2.0 breaking changes:** the `target` option is gone (routing belongs to the relay), the relay's `DEFAULT_TARGET` is replaced by auto-assignment, and the camera-selection option `deviceId` is now `cameraId` (`deviceId` now means the relay identity).
@@ -100,6 +102,8 @@ While streaming, the page holds a screen wake lock so the phone doesn't sleep (i
 | `STREAM_SECONDS` | Streaming time (default 6) |
 | `SCREENSHOT` | Save a screenshot of the page to this path |
 
+`MEDIAMTX_PATH=/path/to/mediamtx npm run e2e:moq` checks the [MoQ output](#publishing-to-mediamtx-media-over-quic) the same way, against a MediaMTX v1.21+ executable you provide. With `MEDIAMTX_URL=https://127.0.0.1:8892` it uses an already running MediaMTX instead, e.g. from `docker compose up`, and reads RTSP from port `MEDIAMTX_RTSP_PORT` (default 8554). It starts MediaMTX with only MoQ and RTSP enabled, streams from the demo with **Output: MediaMTX**, and reads the stream back over RTSP with ffmpeg. It checks that ffprobe finds H.264 and audio, the video decodes without errors, a camera switch mid-stream doesn't break it, and the demo reports the `moq` transport. `CHROME_PATH`, `FALLBACK=1`, `AUDIO=0` and `STREAM_SECONDS` work as above.
+
 ### CI and releases
 
 * **CI** (`.github/workflows/ci.yml`) runs on every push to `main` and on pull requests:
@@ -148,17 +152,21 @@ streamer.setFrameRate(15);                         // max fps; extra camera fram
 streamer.setBitrate(1_500_000);                    // bits/s; undefined = automatic. Forces a keyframe.
 streamer.setFootprintOptions({ heightAboveGround: 3, maxRange: 500 });
 streamer.snapshot();                               // latest position, pose, FOV and footprint (for maps/overlays)
-streamer.transportKind;                            // e.g. "webtransport/datagram" or "websocket"
+streamer.transportKind;                            // e.g. "webtransport/datagram", "websocket" or "moq"
 streamer.deviceId;                                 // the ID the relay routes by
 await streamer.stop();
 ```
 
-Also exported: `getDeviceId()` (this browser's stored ID, to show before streaming), `isEncodingSupported()`, `isAudioEncodingSupported()`, `isWebTransportSupported()`, `computeFootprint()`, `encodeSt0601()`, `TsMuxer`, `readPhotoInfo()`, `photoFov()`, `videoFov()`, `cameraPose()`, `rotationMatrix()`.
+Also exported: `getDeviceId()` (this browser's stored ID, to show before streaming), `isEncodingSupported()`, `isAudioEncodingSupported()`, `isWebTransportSupported()`, `isMoqSupported()`, `MoqPublisher`, `computeFootprint()`, `encodeSt0601()`, `TsMuxer`, `readPhotoInfo()`, `photoFov()`, `videoFov()`, `cameraPose()`, `rotationMatrix()`.
 
 Options (`StreamerOptions`):
 
 | Option | Default | |
 |---|---|---|
+| `output` | `'relay'` | `'relay'`: MPEG-TS with KLV to the relay. `'moq'`: video and audio straight to a Media over QUIC server (MediaMTX), no KLV. See [Publishing to MediaMTX](#publishing-to-mediamtx-media-over-quic) |
+| `moqUrl` | — | Required for `'moq'`: the stream's URL, e.g. `https://mediamtx.example.com:8892/phone-chris`; MediaMTX names the path after the URL's path |
+| `moqFingerprintUrl` | `<moqUrl>/fingerprint` | Where to get the hex SHA-256 of MediaMTX's self-signed certificate, which is then pinned. `false` if the server has a publicly trusted certificate |
+| `moqCredentials` | — | `{ user, pass }` or `{ token }`, if MediaMTX needs authentication to publish |
 | `relayUrl` | — | WebSocket URL: `ws://`, `wss://`, or relative. Required unless `transport: 'webtransport'` |
 | `transport` | `'auto'` | `'auto'`: WebTransport if supported and `webTransportUrl` is set, otherwise or on failure WebSocket. `'webtransport'` / `'websocket'` force one |
 | `webTransportUrl` | — | e.g. `https://relay.example.com:4433/stream` |
@@ -286,6 +294,50 @@ An HTTPS page (secure context) is required for the camera, location and motion s
 With `transport: 'auto'`, a WebTransport connection failure (unsupported browser, blocked UDP, bad certificate; 3 s timeout) falls back to WebSocket and emits a `warning`. Stats and `streamer.transportKind` report the transport in use. After a successful connection, drops reconnect with the same transport.
 
 Connecting: the WebSocket URL carries `?device=<id>&name=<label>`. Over WebTransport, the page opens a bidirectional control stream and writes one JSON line, `{"device": "<id>", "name": "<label>", "mode": "datagram" | "stream"}`; the relay answers `{"ok": true}` or `{"error": "..."}`, then video follows as datagrams or on one unidirectional stream. The client never names a UDP destination.
+
+## Publishing to MediaMTX (Media over QUIC)
+
+With `output: 'moq'` the page publishes straight to [MediaMTX](https://github.com/bluenviron/mediamtx) (v1.21+). There is no relay, and you can watch the stream over RTSP, HLS, WebRTC, SRT or MoQ. The encoder, camera switching, live frame-rate and bitrate changes, and the latency bound all work as they do with the relay.
+
+```ts
+const streamer = createStreamer({
+  output: 'moq',
+  moqUrl: 'https://mediamtx.example.com:8892/phone-chris', // path "phone-chris"
+  // moqCredentials: { user: 'publisher', pass: 'secret' },
+});
+```
+
+**Quick start with Docker:** `docker compose up -d` in this repo starts MediaMTX v1.21.3, configured by [`docker/mediamtx.yml`](docker/mediamtx.yml) to accept a stream on any path. In the demo, choose **Output: MediaMTX** with server `https://<host's LAN IP>:8892`. Then watch at:
+* `https://<host>:8892/<device-id>/` (MoQ)
+* `rtsp://<host>:8554/<device-id>` (RTSP over TCP)
+* `http://<host>:8888/<device-id>/` (HLS)
+* `http://<host>:8889/<device-id>/` (WebRTC). For WebRTC from another machine, set `MEDIAMTX_HOST_IP=<host's LAN IP>`; only Opus audio plays over WebRTC.
+
+The host's firewall must allow TCP and UDP 8892.
+
+```yaml
+# mediamtx.yml (the defaults, shown for reference)
+moq: true
+moqHTTP2Address: :8892      # TCP: certificate fingerprint and MediaMTX's own pages
+moqHTTP3Address: :8892      # UDP: WebTransport
+moqServerKey: auto.key      # generated: a short-lived certificate the page pins by hash
+moqServerCert: auto.crt
+moqAllowOrigins: ['*']      # or the origin of the page that streams
+paths:
+  all_others:
+```
+
+* **Network.** The phone must reach the MediaMTX host on **TCP and UDP 8892**. Then watch at `https://<host>:8892/<path>/` or `rtsp://<host>:8554/<path>`.
+* **Certificate.** The page fetches the certificate fingerprint from `<moqUrl>/fingerprint` and pins it for WebTransport, the same way MediaMTX's own publish page does.
+  * A browser won't fetch from an origin whose self-signed certificate it doesn't trust, and it reports this as a generic network ("CORS") failure. So either open `https://<host>:8892/` once and accept the warning, or serve the fingerprint from your page's own origin and point `moqFingerprintUrl` at it.
+  * The demo does the latter: its dev server answers `GET /mediamtx-fingerprint?url=<moqUrl>/fingerprint`.
+  * A direct fetch is also cross-origin, so `moqAllowOrigins` must allow the page.
+  * Hash pinning only accepts short-lived certificates, which MediaMTX's `auto.crt` is. With a long-lived or publicly trusted certificate, pass `moqFingerprintUrl: false`.
+* **No KLV.** MoQ in MediaMTX carries only video and audio. The sensors, FOV and footprint still drive the `metadata` events and `snapshot()`, but nothing is sent. Use the relay output when receivers need STANAG 4609 metadata.
+* **Codecs.** H.264 is sent as `avc3`, with SPS/PPS in band on each keyframe. Audio is AAC or Opus, as with the relay; Linux Chromium sends Opus. MediaMTX passes codecs through unchanged, so AAC can't be watched over WebRTC and Opus can't be watched over HLS's MPEG-TS variant.
+* **Protocol.** MOQT draft 22 (WebTransport protocol `moqt-22`), an MSF catalog, and LOC objects, one group per frame, matching MediaMTX's own publisher. MoQ is still an IETF draft, so newer MediaMTX releases may need an update here. This is tested against MediaMTX v1.21.3.
+* **Reconnects.** A dropped session reconnects with backoff and republishes from the next keyframe. If MediaMTX refuses the stream (bad credentials, or a path that is already being published), the stream stops with an `error` and does not retry.
+* **Demo.** Choose **Output: MediaMTX** and enter the server, e.g. `https://192.168.1.50:8892`. The path is the device ID, so avoid `:` in it. The **Relay streams** panel and **Watch** only cover relay streams; the demo links to MediaMTX's own viewer instead.
 
 ## Relay
 

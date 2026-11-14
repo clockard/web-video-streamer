@@ -80,7 +80,7 @@ describe('AudioTimestamper', () => {
 });
 
 describe('AudioPesBuffer', () => {
-  const frame = (i: number, durationUs = 20_000): EncodedAudio => ({ data: new Uint8Array([i]), timestampUs: i * durationUs, durationUs });
+  const frame = (i: number, durationUs = 20_000): EncodedAudio => ({ data: new Uint8Array([i]), raw: new Uint8Array([i]), timestampUs: i * durationUs, durationUs });
 
   it('groups ~100 ms of frames per PES with the first PTS', () => {
     const out: [number[], number][] = [];

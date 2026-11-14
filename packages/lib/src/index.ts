@@ -4,6 +4,9 @@
  * over WebTransport or a WebSocket to a relay (see web-video-streamer-relay).
  * The library identifies the device; the relay decides which UDP output each
  * device's stream goes to.
+ *
+ * Alternatively (output: 'moq') video and audio are published straight to a
+ * Media over QUIC server such as MediaMTX, without the relay and without KLV.
  */
 import {
   cameraLabel,
@@ -16,13 +19,7 @@ import {
   type CameraSelection,
 } from './camera';
 import { FrameEncoder, isEncodingSupported } from './encoder';
-import {
-  audioConstraints,
-  AudioEncoderPipeline,
-  AudioPesBuffer,
-  isAudioEncodingSupported,
-  type AudioOptions,
-} from './audio';
+import { audioConstraints, AudioEncoderPipeline, isAudioEncodingSupported, type AudioOptions } from './audio';
 import { StreamClock } from './clock';
 import {
   fovFromPhotoInfo,
@@ -38,9 +35,29 @@ import { requestOrientationPermission, SensorTracker, type CameraPose, type Posi
 import { getDeviceId } from './device';
 import { relayUrl, WebSocketTransport, type Transport, type TransportEvents } from './transport';
 import { isWebTransportSupported, WebTransportTransport, type WebTransportMode } from './webtransport';
-import { TsMuxer } from './ts/muxer';
+import { MoqPublisher } from './moq/publisher';
+import { avc3Codec, type MoqAudioTrack, type MoqTracks } from './moq/catalog';
+import type { MoqCredentials } from './moq/messages';
+import { MoqSink, TsSink, type MediaSink } from './sink';
 
 export interface StreamerOptions extends CameraOptions {
+  /**
+   * 'relay' (default): MPEG-TS with KLV metadata to the relay, which forwards it as UDP.
+   * 'moq': video and audio straight to a Media over QUIC server (MediaMTX) at moqUrl, no KLV.
+   */
+  output?: 'relay' | 'moq';
+  /**
+   * MoQ (WebTransport) URL of the stream, e.g. "https://mediamtx.example.com:8892/phone-chris":
+   * MediaMTX publishes it under the path in the URL. Required when output is 'moq'.
+   */
+  moqUrl?: string;
+  /**
+   * Where to fetch the hex SHA-256 of a self-signed MoQ server certificate. Default
+   * `<moqUrl>/fingerprint`, which MediaMTX serves; false when the server's certificate is publicly trusted.
+   */
+  moqFingerprintUrl?: string | false;
+  /** MediaMTX credentials: user and password, or a bearer token. */
+  moqCredentials?: MoqCredentials;
   /**
    * WebSocket URL of the relay, e.g. "wss://relay.example.com:8090". Relative URLs resolve against the page.
    * Required unless transport is 'webtransport'.
@@ -108,7 +125,7 @@ export interface StreamStats {
   targetFps: number;
   /** Bitrate the encoder is configured with (bits/s). */
   targetBitrate?: number;
-  /** Transport in use, e.g. "webtransport/datagram" or "websocket". */
+  /** Transport in use, e.g. "webtransport/datagram", "websocket" or "moq". */
   transport?: string;
   /** Codec string and H.264 profile in use, e.g. "avc1.64001F" / "High". */
   codec?: string;
@@ -156,8 +173,7 @@ export class Streamer {
   private sensors?: SensorTracker;
   private encoder?: FrameEncoder;
   private audio?: AudioEncoderPipeline;
-  private transport?: Transport;
-  private muxer?: TsMuxer;
+  private sink?: MediaSink;
   private timers: ReturnType<typeof setInterval>[] = [];
   private photoInfo?: PhotoInfo;
   private fovSource: FovSource = 'default';
@@ -204,6 +220,10 @@ export class Streamer {
 
     try {
       if (!isEncodingSupported()) throw new Error('This browser does not support WebCodecs video encoding');
+      if (this.options.output === 'moq') {
+        if (!this.options.moqUrl) throw new Error('moqUrl is required for MoQ output');
+        if (!isWebTransportSupported()) throw new Error('This browser does not support WebTransport, which MoQ needs');
+      }
 
       const audioOptions = this.audioOptions();
       this.stream = await this.openMedia(audioOptions);
@@ -226,10 +246,9 @@ export class Streamer {
       this.emitCamera(track);
 
       const clock = new StreamClock();
-      // The codec must be known before the muxer is made: it goes in the PMT.
+      // The audio codec must be known before the sink is made: it goes in the PMT / catalog.
       this.audio = await this.prepareAudio(audioOptions, clock);
-      this.muxer = new TsMuxer({ onData: (d) => this.transport?.send(d), audio: this.audio?.muxConfig });
-      this.transport = await this.connectTransport();
+      this.sink = await this.connectSink();
 
       this.encoder = new FrameEncoder(
         track,
@@ -241,10 +260,10 @@ export class Streamer {
         },
         (frame) => {
           this.videoStarted = true;
-          this.muxer?.writeVideo(frame.data, frame.timestampUs, frame.keyframe);
+          this.sink?.writeVideo(frame);
         },
         (err) => this.fail(err),
-        () => this.transport?.bufferedAmount ?? 0,
+        () => this.sink?.bufferedAmount ?? 0,
         clock,
       );
       this.encoder.onFrameSize = (width, height) => {
@@ -267,18 +286,18 @@ export class Streamer {
   async stop(): Promise<void> {
     this.timers.splice(0).forEach(clearInterval);
     await Promise.all([this.encoder?.stop(), this.audio?.stop()]);
-    this.transport?.close();
+    this.sink?.close();
     this.sensors?.stop();
     this.stream?.getTracks().forEach((t) => t.stop());
     if (this.options.videoElement) this.options.videoElement.srcObject = null;
-    this.encoder = this.audio = this.transport = this.sensors = this.muxer = undefined;
+    this.encoder = this.audio = this.sink = this.sensors = undefined;
     this.stream = undefined;
     if (this.state !== 'error') this.setState('stopped');
   }
 
-  /** Transport in use while streaming, e.g. "webtransport/datagram" or "websocket". */
+  /** Transport in use while streaming, e.g. "webtransport/datagram", "websocket" or "moq". */
   get transportKind(): string | undefined {
-    return this.transport?.kind;
+    return this.sink?.kind;
   }
 
   /** Audio settings, or undefined when audio is off or cannot work in this browser. */
@@ -425,13 +444,12 @@ export class Streamer {
   private async prepareAudio(options: AudioOptions | undefined, clock: StreamClock): Promise<AudioEncoderPipeline | undefined> {
     const track = this.stream?.getAudioTracks()[0];
     if (!options || !track) return undefined;
-    // PES packets wait for the first video frame, which brings PAT/PMT and a keyframe.
-    const pes = new AudioPesBuffer((frames, timestampUs) => this.muxer?.writeAudio(frames, timestampUs));
+    // Audio waits for the first video frame, which brings PAT/PMT (or the MoQ catalog) and a keyframe.
     const pipeline = new AudioEncoderPipeline(
       track,
       options,
       clock,
-      (frame) => this.videoStarted && pes.push(frame),
+      (frame) => this.videoStarted && this.sink?.writeAudio(frame),
       (err) => {
         // Losing audio is not worth losing the stream: keep sending video.
         this.emit('warning', `Audio stopped: ${err.message}`);
@@ -451,9 +469,34 @@ export class Streamer {
     }
   }
 
-  /** Connect to the relay with the configured transport, falling back from WebTransport to WebSocket in 'auto'. */
-  private async connectTransport(): Promise<Transport> {
-    const events: TransportEvents = {
+  /** Connect the configured output: MoQ, or the relay as MPEG-TS. */
+  private async connectSink(): Promise<MediaSink> {
+    if (this.options.output !== 'moq') return new TsSink(await this.connectTransport(this.transportEvents('Relay')), this.audio?.muxConfig);
+    const publisher = new MoqPublisher(
+      {
+        url: this.options.moqUrl!,
+        fingerprintUrl: this.options.moqFingerprintUrl,
+        credentials: this.options.moqCredentials,
+        tracks: () => this.moqTracks(),
+      },
+      this.transportEvents('MoQ server'),
+    );
+    await publisher.connect();
+    return new MoqSink(publisher);
+  }
+
+  /** What the MoQ catalog announces; undefined until the video encoder is configured. */
+  private moqTracks(): MoqTracks | undefined {
+    const codec = this.encoder?.codec;
+    if (!codec) return undefined;
+    const audio = this.audio;
+    const audioCodec = audio?.codecString;
+    const audioTrack: MoqAudioTrack | undefined = audio && audioCodec ? { codec: audioCodec, sampleRate: audio.sampleRate, channels: audio.channelCount } : undefined;
+    return { video: { codec: avc3Codec(codec) }, audio: audioTrack };
+  }
+
+  private transportEvents(peer: string): TransportEvents {
+    return {
       onOpen: () => {
         // Receivers joining mid-stream need a fresh keyframe (and PAT/PMT, sent with it).
         this.encoder?.requestKeyframe();
@@ -464,10 +507,14 @@ export class Streamer {
         if (reason.endsWith('reconnecting')) {
           this.setState('reconnecting');
         } else {
-          this.fail(new Error(`Relay closed the connection: ${reason}`));
+          this.fail(new Error(`${peer} closed the connection: ${reason}`));
         }
       },
     };
+  }
+
+  /** Connect to the relay with the configured transport, falling back from WebTransport to WebSocket in 'auto'. */
+  private async connectTransport(events: TransportEvents): Promise<Transport> {
     const { transport: choice = 'auto', webTransportUrl, relayUrl: wsUrl, deviceName } = this.options;
 
     if (choice === 'webtransport' || (choice === 'auto' && webTransportUrl)) {
@@ -601,7 +648,12 @@ export class Streamer {
 
   private sendMetadata() {
     const snap = this.snapshot();
-    if (!snap || !this.muxer || !this.encoder || !this.videoStarted) return;
+    if (!snap || !this.sink || !this.encoder || !this.videoStarted) return;
+    if (!this.sink.writeKlv) {
+      // This output carries no KLV; the snapshot still drives the page.
+      this.emit('metadata', snap);
+      return;
+    }
     const { position, pose, fov } = snap;
     const nowUs = BigInt(Math.round((performance.timeOrigin + performance.now()) * 1000));
     const track = this.stream?.getVideoTracks()[0];
@@ -638,7 +690,7 @@ export class Streamer {
         corners: snap.footprint.corners,
       });
     }
-    this.muxer.writeKlv(encodeSt0601(metadata), this.encoder.nowUs());
+    this.sink.writeKlv(encodeSt0601(metadata), this.encoder.nowUs());
     this.emit('metadata', snap);
   }
 
@@ -646,15 +698,15 @@ export class Streamer {
     let lastFrames = 0;
     let lastBytes = 0;
     return () => {
-      if (!this.encoder || !this.transport) return;
+      if (!this.encoder || !this.sink) return;
       const frames = this.encoder.encoded;
-      const bytes = this.transport.bytesSent;
+      const bytes = this.sink.bytesSent;
       this.emit('stats', {
         fps: frames - lastFrames,
         bitrate: (bytes - lastBytes) * 8,
         targetFps: this.encoder.fps,
         targetBitrate: this.encoder.bitrate,
-        transport: this.transport.kind,
+        transport: this.sink.kind,
         codec: this.encoder.codec,
         profile: this.encoder.profile,
         framesEncoded: frames,
@@ -705,3 +757,11 @@ export { isAudioEncodingSupported, type AudioOptions } from './audio';
 export { getDeviceId } from './device';
 export { listCameras, type CameraInfo, type CameraOptions, type CameraSelection } from './camera';
 export { isWebTransportSupported, type WebTransportMode } from './webtransport';
+export { MoqPublisher, type MoqPublisherOptions } from './moq/publisher';
+export type { MoqAudioTrack, MoqTracks, MoqVideoTrack } from './moq/catalog';
+export type { MoqCredentials } from './moq/messages';
+
+/** MoQ output needs WebTransport (and WebCodecs, like every output). */
+export function isMoqSupported(): boolean {
+  return isWebTransportSupported() && isEncodingSupported();
+}

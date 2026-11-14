@@ -28,6 +28,8 @@ export interface AudioOptions {
 export interface EncodedAudio {
   /** One frame, framed for MPEG-TS: ADTS AAC, or an Opus packet with its control header. */
   data: Uint8Array;
+  /** The same frame unframed: raw AAC (no ADTS header) or a bare Opus packet. */
+  raw: Uint8Array;
   timestampUs: number;
   durationUs: number;
 }
@@ -166,6 +168,21 @@ export class AudioEncoderPipeline {
     return this.config?.bitrate;
   }
 
+  /** WebCodecs codec string ("mp4a.40.2" or "opus"). Valid after prepare(). */
+  get codecString(): 'mp4a.40.2' | 'opus' | undefined {
+    return this.codec && (this.codec === 'aac' ? 'mp4a.40.2' : 'opus');
+  }
+
+  /** Sample rate in use, or the one expected before the first samples arrive. */
+  get sampleRate(): number {
+    const rate = this.config?.sampleRate ?? this.track.getSettings().sampleRate ?? this.options.sampleRate ?? 48000;
+    return this.codec === 'aac' && !this.config ? nearestAacRate(rate) : rate;
+  }
+
+  get channelCount(): number {
+    return this.channels;
+  }
+
   /** Pick the codec: AAC if this browser can encode it, else Opus. Throws if neither works. */
   async prepare(): Promise<void> {
     if (!isAudioEncodingSupported()) throw new Error('This browser does not support WebCodecs audio encoding');
@@ -273,13 +290,20 @@ export class AudioEncoderPipeline {
       this.aac = parseAudioSpecificConfig(asc) ?? this.aac;
     }
     let data: Uint8Array;
-    if (this.codec === 'opus') data = toOpusTs(raw);
-    // Some encoders already emit ADTS; otherwise add the header ourselves.
-    else data = raw[0] === 0xff && (raw[1] & 0xf6) === 0xf0 ? raw : toAdts(this.aac!, raw);
+    let unframed = raw;
+    if (this.codec === 'opus') {
+      data = toOpusTs(raw);
+    } else if (raw[0] === 0xff && (raw[1] & 0xf6) === 0xf0) {
+      // Some encoders already emit ADTS: 7-byte header, or 9 with a CRC (protection_absent = 0).
+      data = raw;
+      unframed = raw.subarray(raw[1] & 0x01 ? 7 : 9);
+    } else {
+      data = toAdts(this.aac!, raw);
+    }
     const sampleRate = this.config?.sampleRate ?? 48000;
     const durationUs = chunk.duration ?? (this.codec === 'aac' ? (1024 * 1_000_000) / sampleRate : 20_000);
     this.encoded++;
-    this.onFrame({ data, timestampUs: chunk.timestamp, durationUs });
+    this.onFrame({ data, raw: unframed, timestampUs: chunk.timestamp, durationUs });
   }
 }
 

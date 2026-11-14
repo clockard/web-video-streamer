@@ -22,15 +22,33 @@
 
       <form id="config">
         <label>
+          Output
+          <select id="output">
+            <option value="relay">Relay (MPEG-TS + KLV, forwarded as UDP)</option>
+            <option value="moq">MediaMTX (Media over QUIC, no KLV)</option>
+          </select>
+        </label>
+        <label class="relay-only">
           Relay URL
           <input id="relay" name="relay" autocomplete="off" spellcheck="false" />
         </label>
         <label>
           Device ID
-          <input id="device-id" name="device-id" autocomplete="off" spellcheck="false" pattern="[A-Za-z0-9._:\-]{1,64}" aria-describedby="device-hint" />
+          <input id="device-id" name="device-id" autocomplete="off" spellcheck="false" pattern="[A-Za-z0-9._:\-]{1,64}" aria-describedby="device-hint moq-hint" />
         </label>
-        <p id="device-hint" class="hint">The relay picks this device's UDP output by its ID (see Relay streams below). Letters, digits and <code>. _ : -</code>.</p>
-        <div class="grid">
+        <p id="device-hint" class="hint relay-only">The relay picks this device's UDP output by its ID (see Relay streams below). Letters, digits and <code>. _ : -</code>.</p>
+        <div class="moq-only" hidden>
+          <label>
+            MediaMTX server
+            <input id="moq-server" autocomplete="off" spellcheck="false" placeholder="https://host:8892" />
+          </label>
+          <p id="moq-hint" class="hint">Published as the MediaMTX path named by the device ID (avoid <code>:</code>). Watch: <a id="moq-watch" target="_blank" rel="noopener"></a></p>
+          <div class="grid">
+            <label>MediaMTX user <input id="moq-user" autocomplete="off" spellcheck="false" placeholder="if publishing needs auth" /></label>
+            <label>MediaMTX password <input id="moq-pass" type="password" autocomplete="off" /></label>
+          </div>
+        </div>
+        <div class="grid relay-only">
           <label>
             Transport
             <select id="transport">
@@ -47,7 +65,7 @@
             </select>
           </label>
         </div>
-        <label>
+        <label class="relay-only">
           WebTransport URL
           <input id="wt-url" autocomplete="off" spellcheck="false" placeholder="https://host:4433/stream" />
         </label>

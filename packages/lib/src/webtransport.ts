@@ -36,10 +36,10 @@ export function chunkForDatagrams(data: Uint8Array, maxSize: number): Uint8Array
   return chunks;
 }
 
-/** The relay refused the session (e.g. target not allowed); retrying will not help. */
-class RejectedError extends Error {}
+/** The server refused the session (e.g. target not allowed); retrying will not help. */
+export class RejectedError extends Error {}
 
-function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+export function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
   return Promise.race([
     promise,

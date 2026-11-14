@@ -17,7 +17,7 @@ const input = (id: string) => $<HTMLInputElement>(id);
 const num = (id: string) => (input(id).value === '' ? undefined : Number(input(id).value));
 
 const STORAGE_KEY = 'web-video-streamer-demo';
-const fields = ['relay', 'device-id', 'device-name', 'admin-token', 'transport', 'wt-mode', 'wt-url', 'width', 'height', 'fps', 'bitrate', 'declination', 'mission', 'height-agl', 'max-range', 'audio', 'camera'];
+const fields = ['output', 'moq-server', 'moq-user', 'relay', 'device-id', 'device-name', 'admin-token', 'transport', 'wt-mode', 'wt-url', 'width', 'height', 'fps', 'bitrate', 'declination', 'mission', 'height-agl', 'max-range', 'audio', 'camera'];
 
 /**
  * The chosen camera's ID ('' = default). Kept apart from the <select>, whose options only
@@ -37,7 +37,9 @@ function setField(f: string, value: string) {
 function loadSettings() {
   input('relay').value = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/relay`;
   input('device-id').value = getDeviceId().id;
-  input('wt-url').value = `https://${location.hostname === 'localhost' ? '127.0.0.1' : location.hostname}:4433/stream`;
+  const host = location.hostname === 'localhost' ? '127.0.0.1' : location.hostname;
+  input('wt-url').value = `https://${host}:4433/stream`;
+  input('moq-server').value = `https://${host}:8892`;
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') as Record<string, string>;
     for (const f of fields) if (saved[f]) setField(f, saved[f]);
@@ -45,7 +47,26 @@ function loadSettings() {
     // Storage unavailable (private mode); defaults are fine.
   }
   showVideoSettings();
+  showOutput();
 }
+
+const moqOutput = () => input('output').value === 'moq';
+
+/** MoQ URL of this device's stream: the MediaMTX path is the device ID. */
+function moqUrl(): string {
+  const server = quicUrl('moq-server', 'MediaMTX server URL').replace(/\/+$/, '');
+  return `${server}/${encodeURIComponent(input('device-id').value || getDeviceId().id)}`;
+}
+
+/** Show the fields for the chosen output, and where to watch a MoQ stream. */
+function showOutput() {
+  document.querySelectorAll<HTMLElement>('.relay-only').forEach((el) => (el.hidden = moqOutput()));
+  document.querySelectorAll<HTMLElement>('.moq-only').forEach((el) => (el.hidden = !moqOutput()));
+  const watch = $<HTMLAnchorElement>('moq-watch');
+  const server = input('moq-server').value.trim().replace(/\/+$/, '');
+  watch.href = watch.textContent = server ? `${server}/${encodeURIComponent(input('device-id').value || getDeviceId().id)}/` : '';
+}
+for (const id of ['output', 'moq-server', 'device-id']) input(id).addEventListener('input', showOutput);
 
 /** Bitrate slider in kbps; 0 means automatic. */
 const bitrateSetting = () => (Number(input('bitrate').value) > 0 ? Number(input('bitrate').value) * 1000 : undefined);
@@ -96,24 +117,27 @@ function log(message: string, level: 'info' | 'warning' | 'error' = 'info') {
 }
 
 /**
- * WebTransport URL, with "localhost" replaced by 127.0.0.1. Browsers try ::1
+ * A WebTransport (QUIC) URL field, with "localhost" replaced by 127.0.0.1. Browsers try ::1
  * first for localhost and, unlike TCP, QUIC does not fall back to IPv4, so a
- * relay unreachable over IPv6 loopback (e.g. WSL mirrored networking) fails.
+ * server unreachable over IPv6 loopback (e.g. WSL mirrored networking) fails.
  */
-function webTransportUrl(): string | undefined {
-  const value = input('wt-url').value.trim();
-  if (!value) return undefined;
+function quicUrl(id: string, what: string): string {
+  const value = input(id).value.trim();
+  if (!value) return value;
   try {
     const url = new URL(value);
     if (url.hostname !== 'localhost') return value;
     url.hostname = '127.0.0.1';
-    input('wt-url').value = url.toString();
-    log(`WebTransport URL uses 127.0.0.1 instead of localhost (QUIC does not fall back from IPv6 ::1)`);
-    return url.toString();
+    const fixed = url.pathname === '/' ? url.origin : url.toString();
+    input(id).value = fixed;
+    log(`${what} uses 127.0.0.1 instead of localhost (QUIC does not fall back from IPv6 ::1)`);
+    return fixed;
   } catch {
     return value;
   }
 }
+
+const webTransportUrl = () => quicUrl('wt-url', 'WebTransport URL') || undefined;
 
 const fmt = (v: number | undefined, digits: number, unit = '') => (v === undefined ? '—' : `${v.toFixed(digits)}${unit}`);
 
@@ -150,7 +174,13 @@ $('config').addEventListener('submit', async (e) => {
   e.preventDefault();
   saveSettings();
 
+  const moqUser = input('moq-user').value;
   streamer = createStreamer({
+    output: moqOutput() ? 'moq' : 'relay',
+    moqUrl: moqOutput() ? moqUrl() : undefined,
+    // Fetched through the dev server: the browser won't fetch from MediaMTX's self-signed origin.
+    moqFingerprintUrl: moqOutput() ? `/mediamtx-fingerprint?url=${encodeURIComponent(`${moqUrl()}/fingerprint`)}` : undefined,
+    moqCredentials: moqUser ? { user: moqUser, pass: input('moq-pass').value } : undefined,
     relayUrl: input('relay').value,
     transport: input('transport').value as 'auto' | 'webtransport' | 'websocket',
     webTransportUrl: webTransportUrl(),

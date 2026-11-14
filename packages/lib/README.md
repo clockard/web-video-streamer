@@ -19,6 +19,12 @@ streamer.on('stats', console.log);
 button.onclick = () => streamer.start(); // from a user gesture
 ```
 
+Or publish video and audio (no KLV) straight to [MediaMTX](https://github.com/bluenviron/mediamtx) over Media over QUIC, without the relay:
+
+```ts
+const streamer = createStreamer({ output: 'moq', moqUrl: 'https://mediamtx.example.com:8892/phone-chris' });
+```
+
 Requires a secure (HTTPS) page. Full documentation (options, audio, KLV tags, how FOV and footprint are derived, browser support): https://github.com/clockard/web-video-streamer#readme
 
 MIT License

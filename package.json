@@ -17,6 +17,7 @@
     "dev": "npm run dev -w web-video-streamer-demo",
     "relay": "npm start -w web-video-streamer-relay",
     "e2e": "tsx scripts/e2e.ts",
+    "e2e:moq": "tsx scripts/e2e-moq.ts",
     "verify": "npm run typecheck && npm test && npm run build"
   },
   "devDependencies": {
